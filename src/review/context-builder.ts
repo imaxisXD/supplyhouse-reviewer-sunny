@@ -414,7 +414,7 @@ function extractChangedFunctionNames(diff: string): string[] {
     // Class/object methods (TS/JS/Java/Dart)
     /^\+?\s*(?:public|private|protected|static|async|readonly|\s)*(\w+)\s*\([^)]*\)\s*\{/,
     // Java method signatures
-    /^\+?\s*(?:public|protected|private|static|final|synchronized|abstract|native|default|strictfp|\s)+[\w<>\[\],\s]+\s+(\w+)\s*\(/,
+    /^\+?\s*(?:public|protected|private|static|final|synchronized|abstract|native|default|strictfp|\s)+[\w<>\[\],\s]+\s+(\w+)\s*\([^)]*\)\s*(?:throws\s+[^{;]+)?\s*(?:\{|;)/,
     // Dart method signatures
     /^\+?\s*(?:@override\s*)?(?:static\s+)?(?:Future<[^>]+>|Stream<[^>]+>|void|int|double|String|bool|Widget|[A-Z]\w*|[a-z]\w*)\s+(\w+)\s*\(/,
     // FTL macros/functions

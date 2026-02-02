@@ -1,10 +1,12 @@
 import { redis } from "../db/redis.ts";
 import { env } from "../config/env.ts";
+import { createLogger } from "../config/logger.ts";
 import { createCipheriv, createDecipheriv, createHash, randomBytes } from "crypto";
 
 const DEFAULT_TTL_SECONDS = 60 * 60; // 1 hour
 const ENCRYPTION_ALGO = "aes-256-gcm";
 const IV_BYTES = 12;
+const log = createLogger("token-store");
 
 function getEncryptionKey(): Buffer {
   if (!env.TOKEN_ENCRYPTION_KEY) {
@@ -39,6 +41,10 @@ function decryptToken(payload: string): string {
   return decrypted.toString("utf8");
 }
 
+function looksEncrypted(payload: string): boolean {
+  return payload.split(":").length === 3;
+}
+
 export function reviewTokenKey(reviewId: string): string {
   return `token:review:${reviewId}`;
 }
@@ -55,7 +61,13 @@ export async function storeToken(key: string, token: string, ttlSeconds = DEFAUL
 export async function fetchToken(key: string): Promise<string | null> {
   const raw = await redis.get(key);
   if (!raw) return null;
-  return decryptToken(raw);
+  if (!looksEncrypted(raw)) return raw;
+  try {
+    return decryptToken(raw);
+  } catch (error) {
+    log.warn({ key, error: error instanceof Error ? error.message : String(error) }, "Failed to decrypt token; using legacy value");
+    return raw;
+  }
 }
 
 export async function deleteToken(key: string): Promise<void> {
