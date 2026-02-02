@@ -36,6 +36,11 @@ export interface Usage {
   content: string;
 }
 
+interface FunctionTarget {
+  name: string;
+  file: string;
+}
+
 export interface ContextPackage {
   file: string;
   diff: string;
@@ -128,15 +133,18 @@ async function buildFileContext(
   // 1. Expand diff into full function bodies
   const fullFunctions = await expandToFullFunctions(diffFile, repoPath);
 
-  // 2. Extract changed function names from the diff
-  const changedFunctions = extractChangedFunctionNames(diffFile.diff);
+  // 2. Resolve changed functions for graph queries (prefer Memgraph when available)
+  let changedTargets: FunctionTarget[] = [];
+  if (!options?.skipGraph) {
+    changedTargets = await resolveChangedFunctionTargets(repoId, diffFile.path, diffFile.diff);
+  }
 
   // 3. Query graph and vector DB in parallel
   const [callers, callees, similarCode, usages] = await Promise.all([
-    options?.skipGraph ? Promise.resolve([]) : findCallers(repoId, changedFunctions),
-    options?.skipGraph ? Promise.resolve([]) : findCallees(repoId, changedFunctions),
+    options?.skipGraph ? Promise.resolve([]) : findCallers(repoId, changedTargets),
+    options?.skipGraph ? Promise.resolve([]) : findCallees(repoId, changedTargets),
     options?.skipVectors ? Promise.resolve([]) : findSimilarCode(repoId, diffFile.path, fullFunctions),
-    options?.skipGraph ? Promise.resolve([]) : findUsages(repoId, changedFunctions),
+    options?.skipGraph ? Promise.resolve([]) : findUsages(repoId, changedTargets),
   ]);
 
   return {
@@ -228,6 +236,70 @@ function extractChangedLineNumbers(diff: string): number[] {
   }
 
   return lineNumbers;
+}
+
+async function resolveChangedFunctionTargets(
+  repoId: string,
+  filePath: string,
+  diff: string,
+): Promise<FunctionTarget[]> {
+  const changedLines = extractChangedLineNumbers(diff);
+  let targets: FunctionTarget[] = [];
+
+  if (changedLines.length > 0) {
+    targets = await findChangedFunctionsInFile(repoId, filePath, changedLines);
+  }
+
+  if (targets.length === 0) {
+    targets = extractChangedFunctionNames(diff).map((name) => ({
+      name,
+      file: filePath,
+    }));
+  }
+
+  return dedupeTargets(targets);
+}
+
+function dedupeTargets(targets: FunctionTarget[]): FunctionTarget[] {
+  const seen = new Set<string>();
+  const result: FunctionTarget[] = [];
+  for (const target of targets) {
+    const key = `${target.file}::${target.name}`;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    result.push(target);
+  }
+  return result;
+}
+
+async function findChangedFunctionsInFile(
+  repoId: string,
+  filePath: string,
+  changedLines: number[],
+): Promise<FunctionTarget[]> {
+  if (changedLines.length === 0) return [];
+  const uniqueLines = Array.from(new Set(changedLines));
+
+  try {
+    const records = await runCypher(
+      `UNWIND $lines AS line
+       MATCH (fn:Function {repoId: $repoId, file: $file})
+       WHERE fn.startLine <= line AND fn.endLine >= line
+       RETURN DISTINCT fn.name AS name, fn.file AS file`,
+      { repoId, file: filePath, lines: uniqueLines },
+    );
+
+    return records.map((record) => ({
+      name: record.get("name") as string,
+      file: record.get("file") as string,
+    }));
+  } catch (error) {
+    log.warn(
+      { file: filePath, error: error instanceof Error ? error.message : String(error) },
+      "Failed to resolve changed functions from Memgraph",
+    );
+    return [];
+  }
 }
 
 interface FunctionRange {
@@ -335,11 +407,18 @@ function extractChangedFunctionNames(diff: string): string[] {
 
   // Patterns that capture a function name from a diff line
   const patterns = [
+    // TS/JS function declarations
     /(?:export\s+)?(?:async\s+)?function\s+(\w+)/,
+    // TS/JS variable assignments to function/arrow
     /(?:const|let|var)\s+(\w+)\s*=\s*(?:async\s+)?\(/,
-    /^\+?\s*(?:async\s+)?(\w+)\s*\([^)]*\)\s*\{/,
-    /^(?:\+?\s*)def\s+(\w+)/,
-    /(?:pub\s+)?fn\s+(\w+)/,
+    // Class/object methods (TS/JS/Java/Dart)
+    /^\+?\s*(?:public|private|protected|static|async|readonly|\s)*(\w+)\s*\([^)]*\)\s*\{/,
+    // Java method signatures
+    /^\+?\s*(?:public|protected|private|static|final|synchronized|abstract|native|default|strictfp|\s)+[\w<>\[\],\s]+\s+(\w+)\s*\([^)]*\)\s*(?:throws\s+[^{;]+)?\s*(?:\{|;)/,
+    // Dart method signatures
+    /^\+?\s*(?:@override\s*)?(?:static\s+)?(?:Future<[^>]+>|Stream<[^>]+>|void|int|double|String|bool|Widget|[A-Z]\w*|[a-z]\w*)\s+(\w+)\s*\(/,
+    // FTL macros/functions
+    /<#(?:macro|function)\s+([A-Za-z_][\w-]*)/,
   ];
 
   // Also extract from @@ hunk headers which often contain the function context
@@ -376,31 +455,30 @@ function extractChangedFunctionNames(diff: string): string[] {
  */
 async function findCallers(
   repoId: string,
-  functionNames: string[],
+  targets: FunctionTarget[],
 ): Promise<Caller[]> {
-  if (functionNames.length === 0) return [];
+  if (targets.length === 0) return [];
 
   const callers: Caller[] = [];
 
-  for (const name of functionNames) {
+  for (const target of targets) {
     try {
       const records = await runCypher(
-        `MATCH (caller:Function)-[:CALLS]->(target:Function {name: $name})
-         WHERE caller.repoId = $repoId
-         RETURN caller.name AS name, caller.file AS file, caller.startLine AS line`,
-        { name, repoId },
+        `MATCH (caller:Function)-[r:CALLS]->(target:Function {name: $name, file: $file, repoId: $repoId})
+         RETURN caller.name AS name, caller.file AS file, coalesce(r.line, caller.startLine) AS line`,
+        { name: target.name, file: target.file, repoId },
       );
 
       for (const record of records) {
         callers.push({
           function: record.get("name") as string,
           file: record.get("file") as string,
-          line: record.get("line") as number,
+          line: Number(record.get("line") ?? 0),
         });
       }
     } catch (error) {
       log.warn(
-        { function: name, error: error instanceof Error ? error.message : String(error) },
+        { function: target.name, file: target.file, error: error instanceof Error ? error.message : String(error) },
         "Failed to query callers from Memgraph",
       );
     }
@@ -414,31 +492,30 @@ async function findCallers(
  */
 async function findCallees(
   repoId: string,
-  functionNames: string[],
+  targets: FunctionTarget[],
 ): Promise<Callee[]> {
-  if (functionNames.length === 0) return [];
+  if (targets.length === 0) return [];
 
   const callees: Callee[] = [];
 
-  for (const name of functionNames) {
+  for (const target of targets) {
     try {
       const records = await runCypher(
-        `MATCH (source:Function {name: $name})-[:CALLS]->(callee:Function)
-         WHERE source.repoId = $repoId
+        `MATCH (source:Function {name: $name, file: $file, repoId: $repoId})-[:CALLS]->(callee:Function)
          RETURN callee.name AS name, callee.file AS file, callee.startLine AS line`,
-        { name, repoId },
+        { name: target.name, file: target.file, repoId },
       );
 
       for (const record of records) {
         callees.push({
           function: record.get("name") as string,
           file: record.get("file") as string,
-          line: record.get("line") as number,
+          line: Number(record.get("line") ?? 0),
         });
       }
     } catch (error) {
       log.warn(
-        { function: name, error: error instanceof Error ? error.message : String(error) },
+        { function: target.name, file: target.file, error: error instanceof Error ? error.message : String(error) },
         "Failed to query callees from Memgraph",
       );
     }
@@ -500,31 +577,31 @@ async function findSimilarCode(
  */
 async function findUsages(
   repoId: string,
-  functionNames: string[],
+  targets: FunctionTarget[],
 ): Promise<Usage[]> {
-  if (functionNames.length === 0) return [];
+  if (targets.length === 0) return [];
 
   const usages: Usage[] = [];
 
-  for (const name of functionNames) {
+  for (const target of targets) {
     try {
       const records = await runCypher(
-        `MATCH (f:File)-[:CONTAINS]->(fn:Function)
-         WHERE fn.repoId = $repoId AND fn.name = $name
-         RETURN f.path AS file, fn.startLine AS line, fn.name AS content`,
-        { name, repoId },
+        `MATCH (caller:Function)-[r:CALLS]->(callee:Function {name: $name, file: $file, repoId: $repoId})
+         RETURN caller.file AS file, coalesce(r.line, caller.startLine) AS line, caller.name AS callerName`,
+        { name: target.name, file: target.file, repoId },
       );
 
       for (const record of records) {
+        const callerName = record.get("callerName") as string;
         usages.push({
           file: record.get("file") as string,
-          line: record.get("line") as number,
-          content: `Usage of ${record.get("content") as string}`,
+          line: Number(record.get("line") ?? 0),
+          content: `${callerName}() calls ${target.name}()`,
         });
       }
     } catch (error) {
       log.warn(
-        { function: name, error: error instanceof Error ? error.message : String(error) },
+        { function: target.name, file: target.file, error: error instanceof Error ? error.message : String(error) },
         "Failed to search usages",
       );
     }

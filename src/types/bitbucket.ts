@@ -8,6 +8,8 @@ export interface PRDetails {
   };
   sourceBranch: string;
   targetBranch: string;
+  sourceWorkspace?: string;
+  sourceRepoSlug?: string;
   state: string;
   createdOn: string;
   updatedOn: string;

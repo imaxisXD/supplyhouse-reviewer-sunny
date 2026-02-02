@@ -15,6 +15,8 @@ export interface ReviewJob {
   prUrl: string;
   workspace: string;
   repoSlug: string;
+  sourceWorkspace?: string;
+  sourceRepoSlug?: string;
   prNumber: number;
   tokenKey?: string;
   branch?: string;

@@ -101,9 +101,13 @@ async function updateStatus(
   };
 
   const existingRaw = await redis.get(`review:${reviewId}`);
+  let existingPhase: ReviewPhase | undefined;
   if (existingRaw) {
     try {
       const existing = JSON.parse(existingRaw) as Record<string, unknown>;
+      if (typeof existing.phase === "string") {
+        existingPhase = existing.phase as ReviewPhase;
+      }
       if (typeof existing.startedAt === "string") {
         status.startedAt = existing.startedAt;
       }
@@ -116,6 +120,16 @@ async function updateStatus(
     } catch {
       // Ignore parse errors
     }
+  }
+
+  if (existingPhase === "complete") {
+    return;
+  }
+  if (existingPhase === "failed" && phase === "failed") {
+    return;
+  }
+  if (existingPhase === "failed" && phase !== "failed") {
+    return;
   }
 
   if (phase !== "running-agents") {
@@ -194,27 +208,42 @@ export async function executeReview(job: ReviewJob): Promise<ReviewResult> {
     const diffFiles = parseDiff(rawDiff);
     const prioritized = prioritizeFiles(diffFiles, job.options?.priorityFiles);
     const fullAnalysisFiles = prioritized.filter((f) => f.fullAnalysis).map((f) => f.file);
+    const summaryOnlyFiles = prioritized.filter((f) => !f.fullAnalysis).map((f) => f.file);
+    const droppedFiles = diffFiles.length - prioritized.length;
 
     // Step 2.5: Resolve PR source branch + clone repository
     let branch = job.branch;
-    if (!branch) {
+    let sourceWorkspace = job.sourceWorkspace;
+    let sourceRepoSlug = job.sourceRepoSlug;
+
+    if (!branch || !sourceWorkspace || !sourceRepoSlug) {
       try {
         const prDetails = await bitbucketBreaker.execute(() =>
           bitbucketClient.getPRDetails(workspace, repoSlug, prNumber, tokenValue),
         );
-        branch = prDetails.sourceBranch || prDetails.targetBranch || "main";
+        branch = branch || prDetails.sourceBranch || prDetails.targetBranch || "main";
+        sourceWorkspace = sourceWorkspace || prDetails.sourceWorkspace;
+        sourceRepoSlug = sourceRepoSlug || prDetails.sourceRepoSlug;
       } catch (error) {
         const msg = error instanceof Error ? error.message : String(error);
         log.warn({ reviewId, error: msg }, "Failed to fetch PR details; defaulting to main branch");
-        branch = "main";
+        branch = branch || "main";
       }
     }
-    repoPath = await cloneRepoForReview(workspace, repoSlug, branch, tokenValue);
+    const cloneWorkspace = sourceWorkspace || workspace;
+    const cloneRepoSlug = sourceRepoSlug || repoSlug;
+    repoPath = await cloneRepoForReview(cloneWorkspace, cloneRepoSlug, branch, tokenValue);
     await updateStatus(reviewId, "fetching-pr", 15);
     await assertNotCancelled(cancelKey, "Review cancelled");
 
     log.info(
-      { reviewId, totalFiles: diffFiles.length, fullAnalysis: fullAnalysisFiles.length },
+      {
+        reviewId,
+        totalFiles: diffFiles.length,
+        fullAnalysis: fullAnalysisFiles.length,
+        summaryOnly: summaryOnlyFiles.length,
+        dropped: droppedFiles,
+      },
       "Diff parsed and files prioritized",
     );
 
@@ -226,7 +255,7 @@ export async function executeReview(job: ReviewJob): Promise<ReviewResult> {
 
     const repoId = repoIdFromSlug(workspace, repoSlug);
 
-    const contextPackages = await buildContext(
+    const fullContextPackages = await buildContext(
       repoId,
       fullAnalysisFiles,
       repoPath,
@@ -240,6 +269,12 @@ export async function executeReview(job: ReviewJob): Promise<ReviewResult> {
         skipVectors: degradation.noVectors || degradation.noEmbeddings,
       },
     );
+    const summaryContextPackages = summaryOnlyFiles.map((file) => buildSummaryContext(file));
+    const fullByPath = new Map(fullContextPackages.map((pkg) => [pkg.file, pkg]));
+    const summaryByPath = new Map(summaryContextPackages.map((pkg) => [pkg.file, pkg]));
+    const contextPackages = prioritized
+      .map((entry) => fullByPath.get(entry.file.path) ?? summaryByPath.get(entry.file.path))
+      .filter((pkg): pkg is ContextPackage => Boolean(pkg));
     await updateStatus(reviewId, "building-context", 40);
     await assertNotCancelled(cancelKey, "Review cancelled");
 
@@ -270,7 +305,7 @@ export async function executeReview(job: ReviewJob): Promise<ReviewResult> {
 
     const durationMs = Date.now() - startTime;
     const totalCostUsd = traces.reduce((sum, t) => sum + t.costUsd, 0);
-    const summary = buildSummary(findings, diffFiles.length, durationMs, totalCostUsd);
+    const summary = buildSummary(findings, contextPackages.length, durationMs, totalCostUsd);
 
     await updateStatus(reviewId, "synthesizing", 85, findings);
 
@@ -355,6 +390,31 @@ export async function executeReview(job: ReviewJob): Promise<ReviewResult> {
       }
     }
   }
+}
+
+// ---------------------------------------------------------------------------
+// Summary-only context helpers
+// ---------------------------------------------------------------------------
+
+const SUMMARY_DIFF_MAX_LINES = 200;
+
+function truncateDiff(diff: string, maxLines: number): string {
+  const lines = diff.split("\n");
+  if (lines.length <= maxLines) return diff;
+  const truncated = lines.slice(0, maxLines).join("\n");
+  return `${truncated}\n... (diff truncated, ${lines.length - maxLines} more lines)`;
+}
+
+function buildSummaryContext(diffFile: DiffFile): ContextPackage {
+  return {
+    file: diffFile.path,
+    diff: truncateDiff(diffFile.diff, SUMMARY_DIFF_MAX_LINES),
+    fullFunctions: [],
+    callers: [],
+    callees: [],
+    similarCode: [],
+    usages: [],
+  };
 }
 
 // ---------------------------------------------------------------------------

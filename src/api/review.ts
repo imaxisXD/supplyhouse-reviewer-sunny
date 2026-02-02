@@ -45,6 +45,8 @@ export const reviewRoutes = new Elysia({ prefix: "/api/review" })
       const tokenKey = reviewTokenKey(reviewId);
       await storeToken(tokenKey, trimmedToken);
       let branch: string | undefined;
+      let sourceWorkspace: string | undefined;
+      let sourceRepoSlug: string | undefined;
       try {
         const prDetails = await bitbucketBreaker.execute(() =>
           bitbucketClient.getPRDetails(
@@ -55,6 +57,8 @@ export const reviewRoutes = new Elysia({ prefix: "/api/review" })
           ),
         );
         branch = prDetails.sourceBranch || prDetails.targetBranch || undefined;
+        sourceWorkspace = prDetails.sourceWorkspace;
+        sourceRepoSlug = prDetails.sourceRepoSlug;
       } catch (error) {
         log.warn(
           { reviewId, error: error instanceof Error ? error.message : String(error) },
@@ -67,6 +71,8 @@ export const reviewRoutes = new Elysia({ prefix: "/api/review" })
         prUrl: trimmedUrl,
         workspace: parsed.workspace,
         repoSlug: parsed.repoSlug,
+        sourceWorkspace,
+        sourceRepoSlug,
         prNumber: parsed.prNumber,
         tokenKey,
         branch,
@@ -122,6 +128,18 @@ export const reviewRoutes = new Elysia({ prefix: "/api/review" })
   .delete("/:id", async ({ params, set }) => {
     const { id } = params;
     try {
+      const statusData = await redis.get(`review:${id}`);
+      if (statusData) {
+        try {
+          const status = JSON.parse(statusData);
+          if (status.phase === "complete" || status.phase === "failed") {
+            return { message: `Review already ${status.phase}` };
+          }
+        } catch {
+          // Ignore parse errors
+        }
+      }
+
       // Set cancel flag first — worker will see it on next assertNotCancelled call
       await markCancelled(reviewCancelKey(id));
 
@@ -142,13 +160,16 @@ export const reviewRoutes = new Elysia({ prefix: "/api/review" })
         }
       }
 
-      const statusData = await redis.get(`review:${id}`);
-      if (statusData) {
-        const status = JSON.parse(statusData);
-        status.phase = "failed";
-        status.error = "Cancelled by user";
-        status.completedAt = new Date().toISOString();
-        await redis.set(`review:${id}`, JSON.stringify(status));
+      if (!jobIsActive && statusData) {
+        try {
+          const status = JSON.parse(statusData);
+          status.phase = "failed";
+          status.error = "Cancelled by user";
+          status.completedAt = new Date().toISOString();
+          await redis.set(`review:${id}`, JSON.stringify(status));
+        } catch {
+          // Ignore parse errors
+        }
       }
 
       // Only emit REVIEW_FAILED from here when the worker is NOT active.
