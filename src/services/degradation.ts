@@ -47,7 +47,3 @@ export function getDegradationMode(): DegradationMode {
   return mode;
 }
 
-/**
- * Fallback model to use when the primary LLM provider is degraded.
- */
-export const FALLBACK_MODEL = "openrouter/google/gemini-2.0-flash-001";

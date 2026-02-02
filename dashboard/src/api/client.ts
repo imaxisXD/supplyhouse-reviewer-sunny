@@ -6,6 +6,13 @@ export interface ReviewOptions {
   priorityFiles?: string[];
 }
 
+export type JourneyStepId = "submit" | "review" | "results" | "explore";
+
+export interface JourneyState {
+  step: JourneyStepId;
+  updatedAt?: string;
+}
+
 export interface ReviewSubmission {
   prUrl: string;
   token: string;
@@ -122,6 +129,26 @@ export interface Metrics {
   totalCostUsd: number;
   severityCounts: Record<string, number>;
   circuitBreakers: Record<string, { state: string; failures: number }>;
+}
+
+// ---------------------------------------------------------------------------
+// Journey APIs
+// ---------------------------------------------------------------------------
+
+export async function getJourney(): Promise<JourneyState> {
+  const res = await fetch(`${BASE_URL}/api/journey`);
+  if (!res.ok) throw new Error(`Failed to fetch journey: ${res.statusText}`);
+  return res.json();
+}
+
+export async function setJourney(step: JourneyStepId): Promise<JourneyState> {
+  const res = await fetch(`${BASE_URL}/api/journey`, {
+    method: "PUT",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ step }),
+  });
+  if (!res.ok) throw new Error(`Failed to update journey: ${res.statusText}`);
+  return res.json();
 }
 
 // WebSocket event types matching backend

@@ -2,7 +2,7 @@ import { Elysia, t } from "elysia";
 import { randomUUID } from "crypto";
 import { createLogger } from "../config/logger.ts";
 import { redis, publish } from "../db/redis.ts";
-import { reviewQueue } from "../queue/review-worker.ts";
+import { reviewQueue } from "../queue/queue-instance.ts";
 import { reviewTokenKey, storeToken } from "../utils/token-store.ts";
 import { markCancelled, reviewCancelKey } from "../utils/cancellation.ts";
 import { bitbucketClient } from "../bitbucket/client.ts";

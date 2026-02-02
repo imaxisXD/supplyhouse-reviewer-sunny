@@ -1,27 +1,14 @@
-import { Worker, Queue } from "bullmq";
+import { Worker } from "bullmq";
 import type { Job } from "bullmq";
 import type { ReviewJob } from "../types/review.ts";
 import { executeReview } from "../review/workflow.ts";
 import { createLogger } from "../config/logger.ts";
 import { deleteToken } from "../utils/token-store.ts";
+import { reviewQueue, QUEUE_NAME, REDIS_URL } from "./queue-instance.ts";
+
+export { reviewQueue };
 
 const log = createLogger("review-worker");
-
-const QUEUE_NAME = "reviews";
-const REDIS_URL = process.env.REDIS_URL || "redis://localhost:6379";
-
-/**
- * The BullMQ queue instance. Import this to add review jobs.
- */
-export const reviewQueue = new Queue(QUEUE_NAME, {
-  connection: { url: REDIS_URL },
-  defaultJobOptions: {
-    attempts: 3,
-    backoff: { type: "exponential", delay: 5000 },
-    removeOnComplete: { age: 86400 },
-    removeOnFail: { age: 604800 },
-  },
-});
 
 /**
  * Start the review worker. Call this once at application startup.

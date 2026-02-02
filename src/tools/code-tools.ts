@@ -2,7 +2,7 @@ import { createTool } from "@mastra/core/tools";
 import { z } from "zod";
 import { createLogger } from "../config/logger.ts";
 import { getRepoContext } from "./repo-context.ts";
-import { isAbsolute, join, resolve } from "path";
+import { resolve } from "path";
 
 const log = createLogger("tools:code");
 

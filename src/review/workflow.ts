@@ -1,7 +1,7 @@
 import type { ReviewJob, ReviewStatus, ReviewPhase } from "../types/review.ts";
 import type { Finding, ReviewResult, Severity, Category, AgentTrace } from "../types/findings.ts";
 import type { ContextPackage } from "./context-builder.ts";
-import type { DiffFile } from "../types/bitbucket.ts";
+import type { DiffFile, PRDetails } from "../types/bitbucket.ts";
 import { randomUUID } from "crypto";
 import * as fs from "fs";
 import * as path from "path";
@@ -13,7 +13,7 @@ import { redis, publish } from "../db/redis.ts";
 import { createLogger } from "../config/logger.ts";
 import { env } from "../config/env.ts";
 import { bitbucketBreaker, openRouterBreaker } from "../services/breakers.ts";
-import { getDegradationMode } from "../services/degradation.ts";
+import { getDegradationMode, type DegradationMode } from "../services/degradation.ts";
 import { MODELS, calculateCost } from "../mastra/models.ts";
 import {
   securityAgent,
@@ -27,6 +27,7 @@ import { runWithRepoContext } from "../tools/repo-context.ts";
 import { repoIdFromSlug } from "../utils/repo-identity.ts";
 import { fetchToken } from "../utils/token-store.ts";
 import { assertNotCancelled, isCancelled, reviewCancelKey } from "../utils/cancellation.ts";
+import { reviewQueue } from "../queue/queue-instance.ts";
 
 const log = createLogger("review-workflow");
 const CLONE_BASE_DIR = process.env.CLONE_DIR || "/tmp/supplyhouse-repos";
@@ -158,6 +159,101 @@ async function updateStatus(
 }
 
 // ---------------------------------------------------------------------------
+// Review time estimation
+// ---------------------------------------------------------------------------
+
+async function estimateReviewDuration(): Promise<{ estimateMinutes: number; queueDepth: number }> {
+  let queueDepth = 0;
+  try {
+    queueDepth = await reviewQueue.getWaitingCount();
+  } catch {
+    // If queue introspection fails, default to 0
+  }
+
+  const SAMPLE_SIZE = 20;
+  let totalDurationMs = 0;
+  let count = 0;
+
+  try {
+    const keys: string[] = [];
+    let cursor = "0";
+    do {
+      const [nextCursor, batch] = await redis.scan(cursor, "MATCH", "review:result:*", "COUNT", "50");
+      cursor = nextCursor;
+      keys.push(...batch);
+    } while (cursor !== "0" && keys.length < SAMPLE_SIZE);
+
+    for (const key of keys.slice(0, SAMPLE_SIZE)) {
+      try {
+        const raw = await redis.get(key);
+        if (!raw) continue;
+        const result = JSON.parse(raw) as { summary?: { durationMs?: number } };
+        if (result.summary?.durationMs) {
+          totalDurationMs += result.summary.durationMs;
+          count++;
+        }
+      } catch { /* skip */ }
+    }
+  } catch { /* If Redis scan fails, use default */ }
+
+  const avgDurationMs = count > 0 ? totalDurationMs / count : 120_000;
+  const totalEstimateMs = avgDurationMs + queueDepth * avgDurationMs;
+  const estimateMinutes = Math.max(1, Math.round(totalEstimateMs / 60_000));
+
+  return { estimateMinutes, queueDepth };
+}
+
+// ---------------------------------------------------------------------------
+// Status comment formatting
+// ---------------------------------------------------------------------------
+
+function formatStartedComment(estimateMinutes: number, queueDepth: number): string {
+  const lines = [
+    "\uD83D\uDC41\uFE0F **Review in progress**",
+    "",
+    "The SupplyHouse Reviewer bot is analyzing this pull request.",
+  ];
+
+  if (queueDepth > 0) {
+    lines.push(`There ${queueDepth === 1 ? "is 1 review" : `are ${queueDepth} reviews`} ahead in the queue.`);
+  }
+
+  lines.push(`Estimated time: ~${estimateMinutes} minute${estimateMinutes !== 1 ? "s" : ""}.`);
+  lines.push("", "---", "_Automated review by SupplyHouse Reviewer_");
+
+  return lines.join("\n");
+}
+
+function formatCompletedComment(summary: ReviewResult["summary"], totalFindings: number): string {
+  const lines = [
+    "\uD83D\uDC4D **Review complete**",
+    "",
+    `Analyzed **${summary.filesAnalyzed}** files and found **${totalFindings}** issue${totalFindings !== 1 ? "s" : ""}.`,
+    `Duration: ${(summary.durationMs / 1000).toFixed(1)}s`,
+    "",
+    "See inline comments for details and the summary comment below.",
+    "",
+    "---",
+    "_Automated review by SupplyHouse Reviewer_",
+  ];
+
+  return lines.join("\n");
+}
+
+function formatFailedComment(errorMessage: string): string {
+  const lines = [
+    "\u274C **Review failed**",
+    "",
+    `Error: ${errorMessage}`,
+    "",
+    "---",
+    "_Automated review by SupplyHouse Reviewer_",
+  ];
+
+  return lines.join("\n");
+}
+
+// ---------------------------------------------------------------------------
 // Review execution
 // ---------------------------------------------------------------------------
 
@@ -177,6 +273,8 @@ export async function executeReview(job: ReviewJob): Promise<ReviewResult> {
   let repoPath = "";
   let token: string | undefined;
   const cancelKey = reviewCancelKey(reviewId);
+  let startedCommentId: string | null = null;
+  let prDetails: PRDetails | undefined;
 
   log.info({ reviewId, workspace, repoSlug, prNumber, degradation }, "Starting review");
 
@@ -190,6 +288,9 @@ export async function executeReview(job: ReviewJob): Promise<ReviewResult> {
     if (!env.OPENROUTER_API_KEY) {
       throw new Error("OPENROUTER_API_KEY is required to run reviews");
     }
+    if (degradation.slowLlm) {
+      throw new Error("LLM service is unavailable (circuit breaker open). Review cannot be performed.");
+    }
     await assertNotCancelled(cancelKey, "Review cancelled");
     const tokenValue = token;
     // ------------------------------------------------------------------
@@ -201,6 +302,24 @@ export async function executeReview(job: ReviewJob): Promise<ReviewResult> {
     const rawDiff = await bitbucketBreaker.execute(() =>
       bitbucketClient.getPRDiff(workspace, repoSlug, prNumber, tokenValue),
     );
+
+    // Post "Review Started" comment on the PR
+    if (!degradation.noBitbucket) {
+      try {
+        const { estimateMinutes, queueDepth } = await estimateReviewDuration();
+        const startedBody = formatStartedComment(estimateMinutes, queueDepth);
+        const startedResult = await bitbucketBreaker.execute(() =>
+          bitbucketClient.postSummaryComment(workspace, repoSlug, prNumber, tokenValue, startedBody),
+        );
+        startedCommentId = startedResult.id;
+        log.info({ reviewId, startedCommentId }, "Posted review-started comment");
+      } catch (error) {
+        log.warn(
+          { reviewId, error: error instanceof Error ? error.message : String(error) },
+          "Failed to post review-started comment, continuing",
+        );
+      }
+    }
 
     // ------------------------------------------------------------------
     // Step 2: Parse diff + prioritize files
@@ -216,19 +335,19 @@ export async function executeReview(job: ReviewJob): Promise<ReviewResult> {
     let sourceWorkspace = job.sourceWorkspace;
     let sourceRepoSlug = job.sourceRepoSlug;
 
-    if (!branch || !sourceWorkspace || !sourceRepoSlug) {
-      try {
-        const prDetails = await bitbucketBreaker.execute(() =>
-          bitbucketClient.getPRDetails(workspace, repoSlug, prNumber, tokenValue),
-        );
-        branch = branch || prDetails.sourceBranch || prDetails.targetBranch || "main";
-        sourceWorkspace = sourceWorkspace || prDetails.sourceWorkspace;
-        sourceRepoSlug = sourceRepoSlug || prDetails.sourceRepoSlug;
-      } catch (error) {
-        const msg = error instanceof Error ? error.message : String(error);
-        log.warn({ reviewId, error: msg }, "Failed to fetch PR details; defaulting to main branch");
-        branch = branch || "main";
-      }
+    // Always fetch PR details — we need title/description for synthesis
+    // and branch/workspace for cloning
+    try {
+      prDetails = await bitbucketBreaker.execute(() =>
+        bitbucketClient.getPRDetails(workspace, repoSlug, prNumber, tokenValue),
+      );
+      branch = branch || prDetails.sourceBranch || prDetails.targetBranch || "main";
+      sourceWorkspace = sourceWorkspace || prDetails.sourceWorkspace;
+      sourceRepoSlug = sourceRepoSlug || prDetails.sourceRepoSlug;
+    } catch (error) {
+      const msg = error instanceof Error ? error.message : String(error);
+      log.warn({ reviewId, error: msg }, "Failed to fetch PR details; defaulting to main branch");
+      branch = branch || "main";
     }
     const cloneWorkspace = sourceWorkspace || workspace;
     const cloneRepoSlug = sourceRepoSlug || repoSlug;
@@ -300,7 +419,16 @@ export async function executeReview(job: ReviewJob): Promise<ReviewResult> {
     // ------------------------------------------------------------------
     await updateStatus(reviewId, "synthesizing", 75, agentFindings);
     await assertNotCancelled(cancelKey, "Review cancelled");
-    const synthesis = await synthesizeFindings(reviewId, agentFindings, degradation);
+    const diffFilesMeta = diffFiles.map((f) => ({
+      path: f.path,
+      status: f.status,
+      additions: f.additions,
+      deletions: f.deletions,
+    }));
+    const synthesis = await synthesizeFindings(
+      reviewId, agentFindings, degradation,
+      prDetails?.title, prDetails?.description, diffFilesMeta,
+    );
     const findings = synthesis.findings;
 
     const durationMs = Date.now() - startTime;
@@ -322,8 +450,26 @@ export async function executeReview(job: ReviewJob): Promise<ReviewResult> {
       await updateStatus(reviewId, "posting-comments", 90, findings);
       commentsPosted = await postFindings(
         workspace, repoSlug, prNumber, tokenValue, findings, summary,
-        synthesis, repoPath, diffFiles, cancelKey,
+        synthesis, repoPath, diffFiles, cancelKey, traces, reviewId,
       );
+    }
+
+    // Update the "Review Started" comment to show completion
+    if (startedCommentId && !degradation.noBitbucket) {
+      try {
+        const completedBody = formatCompletedComment(summary, findings.length);
+        await bitbucketBreaker.execute(() =>
+          bitbucketClient.updateComment(
+            workspace, repoSlug, prNumber, tokenValue, startedCommentId!, completedBody,
+          ),
+        );
+        log.info({ reviewId, startedCommentId }, "Updated review-started comment to complete");
+      } catch (error) {
+        log.warn(
+          { reviewId, startedCommentId, error: error instanceof Error ? error.message : String(error) },
+          "Failed to update review-started comment, continuing",
+        );
+      }
     }
 
     // ------------------------------------------------------------------
@@ -340,6 +486,7 @@ export async function executeReview(job: ReviewJob): Promise<ReviewResult> {
         summaryComment: synthesis.summaryComment,
         stats: synthesis.stats,
         recommendation: synthesis.recommendation,
+        confidenceScore: synthesis.confidenceScore,
       },
     };
 
@@ -379,6 +526,16 @@ export async function executeReview(job: ReviewJob): Promise<ReviewResult> {
     } catch { /* ignore parse error */ }
 
     await updateStatus(reviewId, "failed", existingPercentage, existingFindings, errorMessage);
+
+    // Best-effort: update the started comment to show failure
+    if (startedCommentId && token) {
+      try {
+        const failedBody = formatFailedComment(errorMessage);
+        await bitbucketClient.updateComment(
+          workspace, repoSlug, prNumber, token, startedCommentId, failedBody,
+        );
+      } catch { /* best-effort, ignore failures */ }
+    }
 
     throw error;
   } finally {
@@ -421,22 +578,78 @@ function buildSummaryContext(diffFile: DiffFile): ContextPackage {
 // Agent execution
 // ---------------------------------------------------------------------------
 
-interface DegradationMode {
-  noGraph: boolean;
-  noVectors: boolean;
-  slowLlm: boolean;
-  noEmbeddings: boolean;
-  noBitbucket: boolean;
-}
-
 interface AgentResult {
   findings: Finding[];
   traces: AgentTrace[];
 }
 
 /**
+ * Rough token estimate: ~4 chars per token for code.
+ */
+function estimateTokens(text: string): number {
+  return Math.ceil(text.length / 4);
+}
+
+const MAX_TOKENS_PER_BATCH = 80_000;
+
+/**
+ * Format a single context package into markdown for an agent prompt.
+ */
+function formatContextText(ctx: ContextPackage): string {
+  return (
+    `## File: ${ctx.file}\n\n### Diff\n\`\`\`\n${ctx.diff}\n\`\`\`\n\n` +
+    (ctx.fullFunctions.length > 0 ? `### Full Functions\n\`\`\`\n${ctx.fullFunctions.join("\n\n")}\n\`\`\`\n\n` : "") +
+    (ctx.callers.length > 0 ? `### Callers\n${ctx.callers.map((c) => `- ${c.function} (${c.file}:${c.line})`).join("\n")}\n\n` : "") +
+    (ctx.callees.length > 0 ? `### Callees\n${ctx.callees.map((c) => `- ${c.function} (${c.file}:${c.line})`).join("\n")}\n\n` : "") +
+    (ctx.similarCode.length > 0 ? `### Similar Code\n${ctx.similarCode.map((s) => `- ${s.function} (${s.file}, ${Math.round(s.similarity * 100)}% similar)`).join("\n")}\n\n` : "") +
+    (ctx.usages.length > 0 ? `### Usages\n${ctx.usages.map((u) => `- ${u.file}:${u.line} ${u.content}`).join("\n")}\n\n` : "")
+  );
+}
+
+/**
+ * Split context packages into batches that fit within the token budget.
+ */
+function batchContextPackages(packages: ContextPackage[]): ContextPackage[][] {
+  const batches: ContextPackage[][] = [];
+  let currentBatch: ContextPackage[] = [];
+  let currentTokens = 0;
+
+  for (const pkg of packages) {
+    const text = formatContextText(pkg);
+    const tokens = estimateTokens(text);
+
+    // If a single file exceeds the budget, give it its own batch
+    if (tokens >= MAX_TOKENS_PER_BATCH) {
+      if (currentBatch.length > 0) {
+        batches.push(currentBatch);
+        currentBatch = [];
+        currentTokens = 0;
+      }
+      batches.push([pkg]);
+      continue;
+    }
+
+    if (currentTokens + tokens > MAX_TOKENS_PER_BATCH && currentBatch.length > 0) {
+      batches.push(currentBatch);
+      currentBatch = [];
+      currentTokens = 0;
+    }
+
+    currentBatch.push(pkg);
+    currentTokens += tokens;
+  }
+
+  if (currentBatch.length > 0) {
+    batches.push(currentBatch);
+  }
+
+  return batches.length > 0 ? batches : [[]];
+}
+
+/**
  * Run all specialist agents in parallel and collect their findings.
  * Respects degradation modes: skips agents that depend on unavailable services.
+ * For large PRs, files are batched and agents are run per batch to stay within token limits.
  */
 async function runAgents(
   reviewId: string,
@@ -448,135 +661,142 @@ async function runAgents(
 ): Promise<AgentResult> {
   await assertNotCancelled(cancelKey, "Review cancelled");
   const options = job.options || {};
-  const contextText = contextPackages.map((ctx) =>
-    `## File: ${ctx.file}\n\n### Diff\n\`\`\`\n${ctx.diff}\n\`\`\`\n\n` +
-    (ctx.fullFunctions.length > 0 ? `### Full Functions\n\`\`\`\n${ctx.fullFunctions.join("\n\n")}\n\`\`\`\n\n` : "") +
-    (ctx.callers.length > 0 ? `### Callers\n${ctx.callers.map((c) => `- ${c.function} (${c.file}:${c.line})`).join("\n")}\n\n` : "") +
-    (ctx.callees.length > 0 ? `### Callees\n${ctx.callees.map((c) => `- ${c.function} (${c.file}:${c.line})`).join("\n")}\n\n` : "") +
-    (ctx.similarCode.length > 0 ? `### Similar Code\n${ctx.similarCode.map((s) => `- ${s.function} (${s.file}, ${Math.round(s.similarity * 100)}% similar)`).join("\n")}\n\n` : "") +
-    (ctx.usages.length > 0 ? `### Usages\n${ctx.usages.map((u) => `- ${u.file}:${u.line} ${u.content}`).join("\n")}\n\n` : "")
-  ).join("\n---\n\n");
 
-  const prompt = `Review the following code changes and provide your findings:\n\n${contextText}`;
+  const batches = batchContextPackages(contextPackages);
+  log.info({ reviewId, batchCount: batches.length, totalFiles: contextPackages.length }, "Context batched for agents");
 
-  type AgentTask = { name: string; promise: Promise<{ findings: Finding[]; trace: AgentTrace }> };
-  const agentTasks: AgentTask[] = [];
-  const traces: AgentTrace[] = [];
-  const runningAgents: string[] = [];
-
-  // Security agent - always runs unless LLM is completely down or skipped
-  if (!degradation.slowLlm && !options.skipSecurity) {
-    await assertNotCancelled(cancelKey, "Review cancelled");
-    agentTasks.push({ name: "security", promise: runSingleAgentWithTrace("security", reviewId, prompt, repoContext) });
-    runningAgents.push("security");
-  } else {
-    traces.push(buildSkippedTrace("security"));
-  }
-
-  // Logic agent - always runs unless LLM is completely down
-  if (!degradation.slowLlm) {
-    await assertNotCancelled(cancelKey, "Review cancelled");
-    agentTasks.push({ name: "logic", promise: runSingleAgentWithTrace("logic", reviewId, prompt, repoContext) });
-    runningAgents.push("logic");
-  } else {
-    traces.push(buildSkippedTrace("logic"));
-  }
-
-  // Duplication agent - needs vectors
-  if (!degradation.noVectors && !degradation.noEmbeddings && !options.skipDuplication) {
-    await assertNotCancelled(cancelKey, "Review cancelled");
-    agentTasks.push({ name: "duplication", promise: runSingleAgentWithTrace("duplication", reviewId, prompt, repoContext) });
-    runningAgents.push("duplication");
-  } else {
-    if (options.skipDuplication) {
-      log.info({ reviewId }, "Skipping duplication agent (disabled by user)");
-    } else {
-      log.info({ reviewId }, "Skipping duplication agent (vectors unavailable)");
-    }
-    traces.push(buildSkippedTrace("duplication"));
-  }
-
-  // API change agent - benefits from graph but can work without
-  if (!degradation.slowLlm && !degradation.noGraph) {
-    await assertNotCancelled(cancelKey, "Review cancelled");
-    agentTasks.push({ name: "api-change", promise: runSingleAgentWithTrace("api-change", reviewId, prompt, repoContext) });
-    runningAgents.push("api-change");
-  } else {
-    if (degradation.noGraph) {
-      log.info({ reviewId }, "Skipping api-change agent (graph unavailable)");
-    }
-    traces.push(buildSkippedTrace("api-change"));
-  }
-
-  // Refactor agent - always runs
-  if (!degradation.slowLlm) {
-    await assertNotCancelled(cancelKey, "Review cancelled");
-    agentTasks.push({ name: "refactor", promise: runSingleAgentWithTrace("refactor", reviewId, prompt, repoContext) });
-    runningAgents.push("refactor");
-  } else {
-    traces.push(buildSkippedTrace("refactor"));
-  }
-
-  if (runningAgents.length > 0) {
-    await updateStatus(reviewId, "running-agents", 45, [], undefined, undefined, [...runningAgents]);
-  }
-
-  const results = await Promise.allSettled(agentTasks.map((t) => t.promise));
-  await assertNotCancelled(cancelKey, "Review cancelled");
   const allFindings: Finding[] = [];
+  const allTraces: AgentTrace[] = [];
 
-  for (let i = 0; i < results.length; i++) {
-    const result = results[i]!;
-    const taskName = agentTasks[i]!.name;
-    const idx = runningAgents.indexOf(taskName);
-    if (idx >= 0) {
-      runningAgents.splice(idx, 1);
+  for (let batchIdx = 0; batchIdx < batches.length; batchIdx++) {
+    const batch = batches[batchIdx]!;
+    if (batch.length === 0) continue;
+    await assertNotCancelled(cancelKey, "Review cancelled");
+
+    const contextText = batch.map(formatContextText).join("\n---\n\n");
+    const batchLabel = batches.length > 1 ? ` (batch ${batchIdx + 1}/${batches.length})` : "";
+    const prompt = `Review the following code changes and provide your findings.${batchLabel}\nIMPORTANT: Report the "line" field as the line number in the NEW version of the file (not the diff position).\n\n${contextText}`;
+
+    type AgentTask = { name: string; promise: Promise<{ findings: Finding[]; trace: AgentTrace }> };
+    const agentTasks: AgentTask[] = [];
+    const batchTraces: AgentTrace[] = [];
+    const runningAgents: string[] = [];
+
+    // Security agent - always runs unless LLM is completely down or skipped
+    if (!degradation.slowLlm && !options.skipSecurity) {
+      await assertNotCancelled(cancelKey, "Review cancelled");
+      agentTasks.push({ name: "security", promise: runSingleAgentWithTrace("security", reviewId, prompt, repoContext) });
+      runningAgents.push("security");
+    } else if (batchIdx === 0) {
+      batchTraces.push(buildSkippedTrace("security"));
+    }
+
+    // Logic agent - always runs unless LLM is completely down
+    if (!degradation.slowLlm) {
+      await assertNotCancelled(cancelKey, "Review cancelled");
+      agentTasks.push({ name: "logic", promise: runSingleAgentWithTrace("logic", reviewId, prompt, repoContext) });
+      runningAgents.push("logic");
+    } else if (batchIdx === 0) {
+      batchTraces.push(buildSkippedTrace("logic"));
+    }
+
+    // Duplication agent - needs vectors
+    if (!degradation.noVectors && !degradation.noEmbeddings && !options.skipDuplication) {
+      await assertNotCancelled(cancelKey, "Review cancelled");
+      agentTasks.push({ name: "duplication", promise: runSingleAgentWithTrace("duplication", reviewId, prompt, repoContext) });
+      runningAgents.push("duplication");
+    } else if (batchIdx === 0) {
+      if (options.skipDuplication) {
+        log.info({ reviewId }, "Skipping duplication agent (disabled by user)");
+      } else {
+        log.info({ reviewId }, "Skipping duplication agent (vectors unavailable)");
+      }
+      batchTraces.push(buildSkippedTrace("duplication"));
+    }
+
+    // API change agent - benefits from graph but can work without
+    if (!degradation.slowLlm && !degradation.noGraph) {
+      await assertNotCancelled(cancelKey, "Review cancelled");
+      agentTasks.push({ name: "api-change", promise: runSingleAgentWithTrace("api-change", reviewId, prompt, repoContext) });
+      runningAgents.push("api-change");
+    } else if (batchIdx === 0) {
+      if (degradation.noGraph) {
+        log.info({ reviewId }, "Skipping api-change agent (graph unavailable)");
+      }
+      batchTraces.push(buildSkippedTrace("api-change"));
+    }
+
+    // Refactor agent - always runs
+    if (!degradation.slowLlm) {
+      await assertNotCancelled(cancelKey, "Review cancelled");
+      agentTasks.push({ name: "refactor", promise: runSingleAgentWithTrace("refactor", reviewId, prompt, repoContext) });
+      runningAgents.push("refactor");
+    } else if (batchIdx === 0) {
+      batchTraces.push(buildSkippedTrace("refactor"));
+    }
+
+    if (runningAgents.length > 0) {
       await updateStatus(reviewId, "running-agents", 45, [], undefined, undefined, [...runningAgents]);
     }
 
-    if (result.status === "fulfilled") {
-      allFindings.push(...result.value.findings);
-      traces.push(result.value.trace);
+    const results = await Promise.allSettled(agentTasks.map((t) => t.promise));
+    await assertNotCancelled(cancelKey, "Review cancelled");
 
-      // Publish per-agent completion event
-      await publish(`review:events:${reviewId}`, {
-        type: "AGENT_COMPLETE",
-        agent: taskName,
-        findingsCount: result.value.findings.length,
-        durationMs: result.value.trace.durationMs,
-      });
+    for (let i = 0; i < results.length; i++) {
+      const result = results[i]!;
+      const taskName = agentTasks[i]!.name;
+      const idx = runningAgents.indexOf(taskName);
+      if (idx >= 0) {
+        runningAgents.splice(idx, 1);
+        await updateStatus(reviewId, "running-agents", 45, [], undefined, undefined, [...runningAgents]);
+      }
 
-      // Publish individual finding events
-      for (const finding of result.value.findings) {
+      if (result.status === "fulfilled") {
+        allFindings.push(...result.value.findings);
+        batchTraces.push(result.value.trace);
+
+        // Publish per-agent completion event
         await publish(`review:events:${reviewId}`, {
-          type: "FINDING_ADDED",
-          finding: {
-            file: finding.file,
-            line: finding.line,
-            severity: finding.severity,
-            title: finding.title,
-            agent: taskName,
-          },
+          type: "AGENT_COMPLETE",
+          agent: taskName,
+          findingsCount: result.value.findings.length,
+          durationMs: result.value.trace.durationMs,
+        });
+
+        // Publish individual finding events
+        for (const finding of result.value.findings) {
+          await publish(`review:events:${reviewId}`, {
+            type: "FINDING_ADDED",
+            finding: {
+              file: finding.file,
+              line: finding.line,
+              severity: finding.severity,
+              title: finding.title,
+              agent: taskName,
+            },
+          });
+        }
+      } else {
+        log.warn({ agent: taskName, error: result.reason }, "Agent failed, continuing with other agents");
+        batchTraces.push({
+          agent: taskName,
+          startedAt: new Date().toISOString(),
+          completedAt: new Date().toISOString(),
+          durationMs: 0,
+          inputTokens: 0,
+          outputTokens: 0,
+          costUsd: 0,
+          findingsCount: 0,
+          status: "failed",
+          error: result.reason instanceof Error ? result.reason.message : String(result.reason),
         });
       }
-    } else {
-      log.warn({ agent: taskName, error: result.reason }, "Agent failed, continuing with other agents");
-      traces.push({
-        agent: taskName,
-        startedAt: new Date().toISOString(),
-        completedAt: new Date().toISOString(),
-        durationMs: 0,
-        inputTokens: 0,
-        outputTokens: 0,
-        costUsd: 0,
-        findingsCount: 0,
-        status: "failed",
-        error: result.reason instanceof Error ? result.reason.message : String(result.reason),
-      });
     }
-  }
 
-  return { findings: allFindings, traces };
+    allTraces.push(...batchTraces);
+  } // end batch loop
+
+  return { findings: allFindings, traces: allTraces };
 }
 
 function buildSkippedTrace(agent: string): AgentTrace {
@@ -687,6 +907,17 @@ async function runSingleAgentWithTrace(
 /**
  * Parse a JSON findings array from an agent's text response.
  */
+
+const VALID_SEVERITIES: Set<Severity> = new Set(["critical", "high", "medium", "low", "info"]);
+const VALID_CATEGORIES: Set<Category> = new Set(["security", "bug", "duplication", "api-change", "refactor"]);
+const AGENT_DEFAULT_CATEGORY: Record<string, Category> = {
+  security: "security",
+  logic: "bug",
+  duplication: "duplication",
+  "api-change": "api-change",
+  refactor: "refactor",
+};
+
 function parseFindingsFromResponse(text: string, agentName: string): Finding[] {
   try {
     const json = extractJsonObject(text);
@@ -698,11 +929,24 @@ function parseFindingsFromResponse(text: string, agentName: string): Finding[] {
       const f = item as Record<string, unknown>;
       const related = f.relatedCode as Record<string, unknown> | undefined;
       const affected = Array.isArray(f.affectedFiles) ? f.affectedFiles as Record<string, unknown>[] : [];
+
+      // Validate severity against known values
+      const rawSeverity = typeof f.severity === "string" ? f.severity.toLowerCase() : "";
+      const severity: Severity = VALID_SEVERITIES.has(rawSeverity as Severity)
+        ? (rawSeverity as Severity)
+        : "info";
+
+      // Validate category against known values, using agent-specific default
+      const rawCategory = typeof f.category === "string" ? f.category.toLowerCase() : "";
+      const category: Category = VALID_CATEGORIES.has(rawCategory as Category)
+        ? (rawCategory as Category)
+        : (AGENT_DEFAULT_CATEGORY[agentName] ?? "bug");
+
       return {
         file: String(f.file ?? ""),
         line: Number(f.line ?? 0),
-        severity: (f.severity as Severity) ?? "info",
-        category: (f.category as Category) ?? (agentName === "security" ? "security" : "bug"),
+        severity,
+        category,
         title: String(f.title ?? ""),
         description: String(f.description ?? ""),
         suggestion: f.suggestion ? String(f.suggestion) : undefined,
@@ -779,14 +1023,18 @@ type SynthesisOutput = {
     byCategory?: Record<Category, number>;
   };
   recommendation?: string;
+  confidenceScore?: number;
 };
 
 async function synthesizeFindings(
   reviewId: string,
   findings: Finding[],
   degradation: DegradationMode,
+  prTitle?: string,
+  prDescription?: string,
+  diffFilesMeta?: { path: string; status: string; additions: number; deletions: number }[],
 ): Promise<SynthesisOutput> {
-  if (findings.length === 0) return { findings: [] };
+  if (findings.length === 0) return { findings: [], confidenceScore: 5 };
 
   // If LLM is degraded, skip synthesis and return raw findings
   if (degradation.slowLlm) {
@@ -795,7 +1043,30 @@ async function synthesizeFindings(
   }
 
   try {
-    const prompt = `Synthesize and deduplicate the following findings:\n\n${JSON.stringify(findings, null, 2)}`;
+    const promptParts: string[] = [];
+
+    if (prTitle || prDescription) {
+      promptParts.push("## PR Information");
+      if (prTitle) promptParts.push(`**Title:** ${prTitle}`);
+      if (prDescription) promptParts.push(`**Description:** ${prDescription}`);
+      promptParts.push("");
+    }
+
+    if (diffFilesMeta && diffFilesMeta.length > 0) {
+      promptParts.push("## Files Changed");
+      for (const f of diffFilesMeta) {
+        promptParts.push(`- \`${f.path}\` (${f.status}, +${f.additions}/-${f.deletions})`);
+      }
+      promptParts.push("");
+    }
+
+    promptParts.push("## Findings from Specialist Agents");
+    promptParts.push("");
+    promptParts.push("Synthesize and deduplicate the following findings:");
+    promptParts.push("");
+    promptParts.push(JSON.stringify(findings, null, 2));
+
+    const prompt = promptParts.join("\n");
 
     const result = await openRouterBreaker.execute(async () => {
       const response = await synthesisAgent.generate(prompt);
@@ -876,7 +1147,11 @@ function parseSynthesisOutput(text: string): SynthesisOutput | null {
         }
       : undefined;
 
-    return { findings, inlineComments, summaryComment, stats, recommendation };
+    const confidenceScore = typeof parsed.confidenceScore === "number"
+      ? Math.max(1, Math.min(5, Math.round(parsed.confidenceScore)))
+      : undefined;
+
+    return { findings, inlineComments, summaryComment, stats, recommendation, confidenceScore };
   } catch (error) {
     log.warn({ error }, "Failed to parse synthesis output");
     return null;
@@ -930,6 +1205,8 @@ async function postFindings(
   repoPath?: string,
   diffFiles?: DiffFile[],
   cancelKey?: string,
+  traces?: AgentTrace[],
+  reviewId?: string,
 ): Promise<ReviewResult["commentsPosted"]> {
   const posted: ReviewResult["commentsPosted"] = [];
   const diffMap = new Map<string, DiffFile>();
@@ -938,27 +1215,41 @@ async function postFindings(
   }
   const lineCountCache = new Map<string, number>();
 
+  // Load previously posted comments to prevent duplicates on BullMQ retries
+  const postedSetKey = reviewId ? `review:posted-comments:${reviewId}` : null;
+  const alreadyPosted = new Set<string>();
+  if (postedSetKey) {
+    try {
+      const raw = await redis.get(postedSetKey);
+      if (raw) {
+        const arr = JSON.parse(raw) as string[];
+        for (const k of arr) alreadyPosted.add(k);
+      }
+    } catch {
+      // Ignore parse errors
+    }
+  }
+
+  async function tryPostInlineComment(file: string, line: number, content: string): Promise<void> {
+    const commentKey = `${file}:${line}`;
+    if (alreadyPosted.has(commentKey)) {
+      log.debug({ file, line }, "Comment already posted (retry dedup), skipping");
+      return;
+    }
+    const resolvedLine = resolveCommentLine(file, line, repoPath, diffMap, lineCountCache);
+    if (!resolvedLine) return;
+    const result = await bitbucketBreaker.execute(() =>
+      bitbucketClient.postInlineComment(workspace, repoSlug, prNumber, token, file, resolvedLine, content),
+    );
+    posted.push({ commentId: result.id, file, line: resolvedLine });
+    alreadyPosted.add(commentKey);
+  }
+
   if (synthesis?.inlineComments && synthesis.inlineComments.length > 0) {
     for (const comment of synthesis.inlineComments) {
       try {
-        if (cancelKey) {
-          await assertNotCancelled(cancelKey, "Review cancelled");
-        }
-        const resolvedLine = resolveCommentLine(
-          comment.file,
-          comment.line,
-          repoPath,
-          diffMap,
-          lineCountCache,
-        );
-        if (!resolvedLine) continue;
-        const result = await bitbucketBreaker.execute(() =>
-          bitbucketClient.postInlineComment(
-            workspace, repoSlug, prNumber, token,
-            comment.file, resolvedLine, comment.content,
-          ),
-        );
-        posted.push({ commentId: result.id, file: comment.file, line: resolvedLine });
+        if (cancelKey) await assertNotCancelled(cancelKey, "Review cancelled");
+        await tryPostInlineComment(comment.file, comment.line, comment.content);
       } catch (error) {
         log.warn(
           { file: comment.file, line: comment.line, error: error instanceof Error ? error.message : String(error) },
@@ -969,26 +1260,9 @@ async function postFindings(
   } else {
     for (const finding of findings) {
       try {
-        if (cancelKey) {
-          await assertNotCancelled(cancelKey, "Review cancelled");
-        }
-        const resolvedLine = resolveCommentLine(
-          finding.file,
-          finding.line,
-          repoPath,
-          diffMap,
-          lineCountCache,
-        );
-        if (!resolvedLine) continue;
+        if (cancelKey) await assertNotCancelled(cancelKey, "Review cancelled");
         const commentBody = formatFindingComment(finding);
-        const result = await bitbucketBreaker.execute(() =>
-          bitbucketClient.postInlineComment(
-            workspace, repoSlug, prNumber, token,
-            finding.file, resolvedLine, commentBody,
-          ),
-        );
-
-        posted.push({ commentId: result.id, file: finding.file, line: resolvedLine });
+        await tryPostInlineComment(finding.file, finding.line, commentBody);
       } catch (error) {
         log.warn(
           { file: finding.file, line: finding.line, error: error instanceof Error ? error.message : String(error) },
@@ -998,11 +1272,20 @@ async function postFindings(
     }
   }
 
+  // Persist posted comments set so retries can skip already-posted
+  if (postedSetKey && alreadyPosted.size > 0) {
+    try {
+      await redis.set(postedSetKey, JSON.stringify([...alreadyPosted]), "EX", 86400);
+    } catch {
+      // Non-critical, best-effort dedup
+    }
+  }
+
   try {
     if (cancelKey) {
       await assertNotCancelled(cancelKey, "Review cancelled");
     }
-    const summaryBody = synthesis?.summaryComment ?? formatSummaryComment(summary, findings.length);
+    const summaryBody = synthesis?.summaryComment ?? formatSummaryComment(summary, findings.length, traces, findings, synthesis?.recommendation);
     await bitbucketBreaker.execute(() =>
       bitbucketClient.postSummaryComment(workspace, repoSlug, prNumber, token, summaryBody),
     );
@@ -1115,44 +1398,115 @@ function formatFindingComment(finding: Finding): string {
   return lines.join("\n");
 }
 
+const AGENT_TO_CATEGORY: Record<string, Category> = {
+  security: "security",
+  logic: "bug",
+  duplication: "duplication",
+  "api-change": "api-change",
+  refactor: "refactor",
+};
+
+function computeConfidenceScore(findings: Finding[]): number {
+  if (findings.length === 0) return 5;
+  const avg = findings.reduce((sum, f) => sum + f.confidence, 0) / findings.length;
+  if (avg >= 0.85) return 5;
+  if (avg >= 0.70) return 4;
+  if (avg >= 0.55) return 3;
+  if (avg >= 0.40) return 2;
+  return 1;
+}
+
 function formatSummaryComment(
   summary: ReviewResult["summary"],
   totalFindings: number,
+  traces?: AgentTrace[],
+  findings?: Finding[],
+  recommendation?: string,
 ): string {
   const lines = [
-    "## PR Review Summary",
+    "## Summary",
     "",
-    `**Files analyzed:** ${summary.filesAnalyzed}`,
-    `**Total findings:** ${totalFindings}`,
-    `**Duration:** ${(summary.durationMs / 1000).toFixed(1)}s`,
-    `**Cost:** $${summary.costUsd.toFixed(4)}`,
+    `Analyzed **${summary.filesAnalyzed}** files and found **${totalFindings}** issue${totalFindings !== 1 ? "s" : ""} in ${(summary.durationMs / 1000).toFixed(1)}s.`,
     "",
+  ];
+
+  // Issues Found
+  if (findings && findings.length > 0) {
+    lines.push("**Issues Found:**");
+    for (const f of findings.slice(0, 15)) {
+      lines.push(`- ${f.title} (${f.file}:${f.line}) — ${f.severity}`);
+    }
+    if (findings.length > 15) {
+      lines.push(`- _...and ${findings.length - 15} more_`);
+    }
+    lines.push("");
+  } else {
+    lines.push("No issues found. The code looks clean and well-structured.", "");
+  }
+
+  // Confidence Score
+  const score = findings ? computeConfidenceScore(findings) : 5;
+  lines.push(`**Confidence Score: ${score}/5**`);
+  if (recommendation) {
+    lines.push(recommendation);
+  } else if (totalFindings === 0) {
+    lines.push("Safe to merge.");
+  } else if (summary.bySeverity.critical > 0) {
+    lines.push("Request changes \u2014 critical issues require attention before merging.");
+  } else if (summary.bySeverity.high >= 2) {
+    lines.push("Request changes \u2014 multiple high-severity issues found.");
+  } else if (summary.bySeverity.high === 1) {
+    lines.push("Review suggested \u2014 one high-severity issue needs attention.");
+  } else {
+    lines.push("Safe to merge after fixing the issues above.");
+  }
+  lines.push("");
+
+  // Findings by Severity table
+  lines.push(
     "### Findings by Severity",
     "",
-    `| Severity | Count |`,
-    `|----------|-------|`,
+    "| Severity | Count |",
+    "|----------|-------|",
     `| Critical | ${summary.bySeverity.critical} |`,
     `| High | ${summary.bySeverity.high} |`,
     `| Medium | ${summary.bySeverity.medium} |`,
     `| Low | ${summary.bySeverity.low} |`,
     `| Info | ${summary.bySeverity.info} |`,
     "",
-    "### Findings by Category",
-    "",
-    `| Category | Count |`,
-    `|----------|-------|`,
-    `| Security | ${summary.byCategory.security} |`,
-    `| Bug | ${summary.byCategory.bug} |`,
-    `| Duplication | ${summary.byCategory.duplication} |`,
-    `| API Change | ${summary.byCategory["api-change"]} |`,
-    `| Refactor | ${summary.byCategory.refactor} |`,
-  ];
+  );
 
-  if (totalFindings === 0) {
-    lines.push("", "No issues found. Looks good! :tada:");
+  // Agent Confidence table
+  if (traces && traces.length > 0 && findings && findings.length > 0) {
+    lines.push(
+      "### Agent Confidence Scores",
+      "",
+      "| Agent | Findings | Avg Confidence | Status |",
+      "|-------|----------|----------------|--------|",
+    );
+
+    for (const trace of traces) {
+      const category = AGENT_TO_CATEGORY[trace.agent];
+      const agentFindings = category
+        ? findings.filter((f) => f.category === category)
+        : [];
+      const avgConfidence = agentFindings.length > 0
+        ? agentFindings.reduce((sum, f) => sum + f.confidence, 0) / agentFindings.length
+        : 0;
+      const confidenceDisplay = agentFindings.length > 0
+        ? `${Math.round(avgConfidence * 100)}%`
+        : "N/A";
+      const statusEmoji = trace.status === "success"
+        ? "\u2705"
+        : trace.status === "skipped"
+          ? "\u23ED\uFE0F"
+          : "\u274C";
+      lines.push(`| ${trace.agent} | ${trace.findingsCount} | ${confidenceDisplay} | ${statusEmoji} ${trace.status} |`);
+    }
+    lines.push("");
   }
 
-  lines.push("", "---", "_Automated review by SupplyHouse Reviewer_");
+  lines.push("---", "_Automated review by SupplyHouse Reviewer_");
 
   return lines.join("\n");
 }

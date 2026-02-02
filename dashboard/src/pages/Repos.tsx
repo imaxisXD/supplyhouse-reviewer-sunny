@@ -2,6 +2,11 @@ import { useState, useEffect } from "react";
 import { Link } from "react-router-dom";
 import { getIndexedRepos } from "../api/client";
 import type { RepoInfo } from "../api/client";
+import { advanceJourneyStep } from "../journey";
+
+const panelClass =
+  "border border-ink-900 bg-white p-4";
+const statLabelClass = "text-[10px] uppercase tracking-[0.3em] text-ink-600";
 
 export default function Repos() {
   const [repos, setRepos] = useState<RepoInfo[]>([]);
@@ -9,6 +14,7 @@ export default function Repos() {
   const [error, setError] = useState("");
 
   useEffect(() => {
+    void advanceJourneyStep("explore");
     getIndexedRepos()
       .then((data) => setRepos(data.repos ?? []))
       .catch((err) => setError(err instanceof Error ? err.message : "Failed to load repos"))
@@ -16,28 +22,27 @@ export default function Repos() {
   }, []);
 
   return (
-    <div className="max-w-4xl mx-auto">
-      <h1 className="text-2xl font-bold mb-2">Indexed Repositories</h1>
-      <p className="text-gray-400 mb-8">
-        View the code knowledge graph for any indexed repository.
-      </p>
+    <div className="space-y-6">
+      <div>
+        <div className="text-[11px] uppercase tracking-[0.45em] text-ink-600">Repositories</div>
+        <h1 className="mt-2 text-2xl font-semibold text-ink-950">Indexed Repositories</h1>
+        <p className="mt-2 text-sm text-ink-700">View the code knowledge graph for any indexed repository.</p>
+      </div>
 
-      {loading && (
-        <div className="text-gray-400 text-sm">Loading repositories...</div>
-      )}
+      {loading && <div className="text-ink-600 text-sm">Loading…</div>}
 
       {error && (
-        <div className="p-3 bg-red-900/30 border border-red-800 rounded-lg text-sm text-red-300">
+        <div className="border border-rose-400/50 bg-rose-50 p-5 text-rose-700 text-sm">
           {error}
         </div>
       )}
 
       {!loading && repos.length === 0 && !error && (
-        <div className="text-center py-16">
-          <p className="text-gray-500 text-sm">No indexed repositories found.</p>
-          <p className="text-gray-600 text-xs mt-2">
+        <div className={`${panelClass} text-center py-12`}>
+          <p className="text-ink-700 text-sm mb-2">No indexed repositories found.</p>
+          <p className="text-xs text-ink-600">
             Index a repository from the{" "}
-            <Link to="/indexing" className="text-blue-400 hover:text-blue-300">
+            <Link to="/indexing" className="text-brand-600 hover:underline">
               Indexing
             </Link>{" "}
             page first.
@@ -46,31 +51,31 @@ export default function Repos() {
       )}
 
       {repos.length > 0 && (
-        <div className="grid gap-4 sm:grid-cols-2">
+        <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
           {repos.map((repo) => (
             <Link
               key={repo.repoId}
               to={`/repo/${encodeURIComponent(repo.repoId)}`}
-              className="block bg-gray-900 border border-gray-800 rounded-lg p-5 hover:border-blue-500/50 hover:bg-gray-900/80 transition-colors group"
+              className={`${panelClass} hover:border-brand-500/50 transition-colors group`}
             >
-              <h3 className="text-sm font-semibold text-white group-hover:text-blue-400 transition-colors truncate mb-3">
+              <h3 className="text-sm font-semibold text-ink-950 group-hover:text-brand-600 transition-colors truncate mb-4">
                 {repo.repoId}
               </h3>
               <div className="grid grid-cols-3 gap-3">
                 <div>
-                  <p className="text-xs text-gray-500">Files</p>
-                  <p className="text-lg font-bold text-blue-400">{repo.fileCount}</p>
+                  <p className={statLabelClass}>Files</p>
+                  <p className="text-lg font-bold text-brand-600">{repo.fileCount}</p>
                 </div>
                 <div>
-                  <p className="text-xs text-gray-500">Functions</p>
-                  <p className="text-lg font-bold text-green-400">{repo.functionCount}</p>
+                  <p className={statLabelClass}>Functions</p>
+                  <p className="text-lg font-bold text-emerald-700">{repo.functionCount}</p>
                 </div>
                 <div>
-                  <p className="text-xs text-gray-500">Classes</p>
-                  <p className="text-lg font-bold text-purple-400">{repo.classCount}</p>
+                  <p className={statLabelClass}>Classes</p>
+                  <p className="text-lg font-bold text-amber-700">{repo.classCount}</p>
                 </div>
               </div>
-              <div className="mt-3 text-xs text-gray-500 group-hover:text-gray-400 transition-colors">
+              <div className="mt-4 text-xs text-ink-600 group-hover:text-ink-800 transition-colors">
                 View knowledge graph →
               </div>
             </Link>

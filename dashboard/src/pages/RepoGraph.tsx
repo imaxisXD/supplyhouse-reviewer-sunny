@@ -10,6 +10,7 @@ import GraphLegend, {
   EDGE_COLORS,
   NODE_SIZES,
 } from "../components/GraphLegend";
+import { advanceJourneyStep } from "../journey";
 
 // Extended node type with force-graph positional data
 type FGNode = GraphNode & { x?: number; y?: number; z?: number; __connections?: number };
@@ -65,6 +66,10 @@ export default function RepoGraph() {
     EXTENDS: true,
     IMPLEMENTS: true,
   });
+
+  useEffect(() => {
+    void advanceJourneyStep("explore");
+  }, []);
 
   // Fetch graph data
   useEffect(() => {
@@ -347,11 +352,11 @@ export default function RepoGraph() {
 
   if (loading) {
     return (
-      <div className="fixed inset-0 z-40 flex items-center justify-center bg-gray-950">
+    <div className="fixed inset-0 z-40 flex items-center justify-center bg-warm-50">
         <div className="text-center">
           <div className="relative mx-auto mb-6 h-20 w-20">
             <div
-              className="absolute inset-0 rounded-full border-2 border-transparent"
+              className="absolute inset-0 border-2 border-transparent"
               style={{
                 borderTopColor: NODE_COLORS.File,
                 borderRightColor: NODE_COLORS.Function,
@@ -360,7 +365,7 @@ export default function RepoGraph() {
               }}
             />
             <div
-              className="absolute inset-2 rounded-full border-2 border-transparent"
+              className="absolute inset-2 border-2 border-transparent"
               style={{
                 borderTopColor: NODE_COLORS.Class,
                 borderLeftColor: NODE_COLORS.File,
@@ -368,7 +373,7 @@ export default function RepoGraph() {
               }}
             />
             <div
-              className="absolute inset-4 rounded-full border-2 border-transparent"
+              className="absolute inset-4 border-2 border-transparent"
               style={{
                 borderBottomColor: NODE_COLORS.Function,
                 animation: "spin 1.5s linear infinite",
@@ -376,13 +381,13 @@ export default function RepoGraph() {
             />
             <div className="absolute inset-0 flex items-center justify-center">
               <div
-                className="h-3 w-3 rounded-full"
+                className="h-3 w-3"
                 style={{ backgroundColor: NODE_COLORS.File, boxShadow: `0 0 12px ${NODE_COLORS.File}` }}
               />
             </div>
           </div>
-          <p className="text-sm text-gray-400 tracking-wide">Loading knowledge graph...</p>
-          <p className="text-xs text-gray-600 mt-1 font-mono">{decodedRepoId}</p>
+          <p className="text-sm text-ink-700 tracking-wide">Loading knowledge graph...</p>
+          <p className="text-xs text-ink-600 mt-1 font-mono">{decodedRepoId}</p>
         </div>
         <style>{`@keyframes spin { to { transform: rotate(360deg); } }`}</style>
       </div>
@@ -392,11 +397,11 @@ export default function RepoGraph() {
   if (error) {
     return (
       <div className="max-w-md mx-auto mt-20 text-center">
-        <div className="p-6 bg-red-900/20 border border-red-800/50 rounded-lg">
-          <p className="text-red-400 text-sm mb-2">Failed to load graph</p>
-          <p className="text-red-300/70 text-xs font-mono">{error}</p>
+        <div className="p-6 bg-rose-50 border border-rose-400/50">
+          <p className="text-rose-700 text-sm mb-2">Failed to load graph</p>
+          <p className="text-rose-600/80 text-xs font-mono">{error}</p>
         </div>
-        <Link to="/repos" className="inline-block mt-6 text-sm text-gray-400 hover:text-white transition-colors">
+        <Link to="/repos" className="inline-block mt-6 text-sm text-ink-600 hover:text-ink-900 transition-colors">
           Back to repositories
         </Link>
       </div>
@@ -406,19 +411,19 @@ export default function RepoGraph() {
   return (
     <div
       ref={containerRef}
-      className="fixed inset-0 top-[57px]"
-      style={{ background: "radial-gradient(ellipse at 50% 50%, #0a0f1e 0%, #030712 70%)" }}
+      className="fixed inset-y-0 right-0 left-64"
+      style={{ background: "#fbf8f2" }}
     >
       {/* Breadcrumb overlay */}
       <div className="absolute top-4 right-4 z-10 flex items-center gap-3">
         <Link
           to="/repos"
-          className="text-xs text-gray-500 hover:text-gray-300 transition-colors font-mono"
+          className="text-xs text-ink-600 hover:text-ink-900 transition-colors font-mono"
         >
           repos
         </Link>
-        <span className="text-gray-700 text-xs">/</span>
-        <span className="text-xs text-gray-300 font-mono truncate max-w-[300px]">
+        <span className="text-ink-500 text-xs">/</span>
+        <span className="text-xs text-ink-700 font-mono truncate max-w-[300px]">
           {decodedRepoId}
         </span>
       </div>
@@ -440,28 +445,28 @@ export default function RepoGraph() {
 
       {/* Selected node detail panel */}
       {selectedNode && (
-        <div className="absolute bottom-6 left-4 z-10 w-72 bg-gray-900/95 backdrop-blur-sm border border-gray-700 rounded-lg shadow-xl p-4">
+        <div className="absolute bottom-6 left-4 z-10 w-72 bg-white border border-ink-900 p-4">
           <div className="flex items-start justify-between mb-2">
             <div className="flex items-center gap-2">
               <span
-                className="w-2.5 h-2.5 rounded-full flex-shrink-0"
+                className="w-2.5 h-2.5 flex-shrink-0"
                 style={{ backgroundColor: NODE_COLORS[selectedNode.label], boxShadow: `0 0 8px ${NODE_COLORS[selectedNode.label]}` }}
               />
-              <span className="text-[10px] uppercase tracking-wider text-gray-500">
+              <span className="text-[10px] uppercase tracking-wider text-ink-600">
                 {selectedNode.label}
               </span>
             </div>
             <button
               onClick={() => setSelectedNode(null)}
-              className="text-gray-600 hover:text-gray-300 text-xs transition-colors"
+              className="text-ink-600 hover:text-ink-900 text-xs transition-colors"
             >
               close
             </button>
           </div>
-          <p className="text-sm text-white font-mono truncate mb-2" title={selectedNode.name}>
+          <p className="text-sm text-ink-900 font-mono truncate mb-2" title={selectedNode.name}>
             {selectedNode.name}
           </p>
-          <div className="space-y-1 text-xs text-gray-400 font-mono">
+          <div className="space-y-1 text-xs text-ink-600 font-mono">
             {selectedNode.path && (
               <p className="truncate" title={selectedNode.path}>
                 {selectedNode.path}
@@ -477,15 +482,15 @@ export default function RepoGraph() {
             {selectedNode.params && <p>({selectedNode.params})</p>}
             {selectedNode.returnType && <p>→ {selectedNode.returnType}</p>}
             {selectedNode.extendsName && (
-              <p className="text-red-400">extends {selectedNode.extendsName}</p>
+              <p className="text-rose-700">extends {selectedNode.extendsName}</p>
             )}
-            {selectedNode.isExported && <p className="text-green-400">exported</p>}
-            {selectedNode.isAsync && <p className="text-blue-400">async</p>}
+            {selectedNode.isExported && <p className="text-emerald-700">exported</p>}
+            {selectedNode.isAsync && <p className="text-sky-700">async</p>}
             {selectedNode.propertyCount != null && (
               <p>{selectedNode.propertyCount} properties, {selectedNode.methodCount ?? 0} methods</p>
             )}
           </div>
-          <div className="mt-3 pt-2 border-t border-gray-800 text-[10px] text-gray-600">
+          <div className="mt-3 pt-2 border-t border-ink-900 text-[10px] text-ink-500">
             {selectedNode.__connections ?? 0} connections
           </div>
         </div>

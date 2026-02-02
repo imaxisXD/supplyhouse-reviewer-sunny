@@ -2,9 +2,26 @@ import { useEffect, useState } from "react";
 import { Link, useNavigate } from "react-router-dom";
 import { getReviewsList, submitReview } from "../api/client";
 import type { ReviewListItem } from "../api/client";
+import { useJourney, journeySteps, getJourneyStatus } from "../journey";
+
+const panelClass =
+  "border border-ink-900 bg-white p-4";
+const panelSoftClass = "border border-dashed border-ink-900 bg-warm-50 p-4";
+const panelTitleClass = "text-[10px] uppercase tracking-[0.35em] text-ink-600";
+const labelClass = "text-[10px] font-semibold uppercase tracking-[0.3em] text-ink-600";
+const inputClass =
+  "w-full border border-ink-900 bg-white px-3 py-2 text-sm text-ink-900 placeholder:text-ink-500 focus:outline-none focus:border-brand-500";
+const buttonPrimaryClass =
+  "inline-flex items-center justify-center gap-2 border border-brand-500 bg-brand-500 px-4 py-2 text-[11px] font-semibold uppercase tracking-[0.3em] text-white transition hover:bg-brand-400 disabled:cursor-not-allowed disabled:opacity-60";
+const badgeBrandClass =
+  "inline-flex items-center gap-1 border border-brand-500/40 bg-brand-500/10 px-2 py-0.5 text-[10px] font-semibold uppercase tracking-[0.2em] text-brand-700";
+const tableHeaderClass = "px-4 py-3 text-[10px] uppercase tracking-[0.3em] text-ink-600";
+const tableRowClass = "border-t border-ink-900 hover:bg-warm-100/60 transition";
+const tableCellClass = "px-4 py-3 text-ink-700";
 
 export default function Home() {
   const navigate = useNavigate();
+  const { currentStep, advanceStep, loading: journeyLoading } = useJourney();
   const [prUrl, setPrUrl] = useState("");
   const [token, setToken] = useState("");
   const [loading, setLoading] = useState(false);
@@ -21,10 +38,15 @@ export default function Home() {
   useEffect(() => {
     setRecentLoading(true);
     getReviewsList(10)
-      .then((res) => setRecent(res.reviews))
+      .then((res) => {
+        setRecent(res.reviews);
+        if (res.reviews.length > 0) {
+          advanceStep("results");
+        }
+      })
       .catch(() => setRecent([]))
       .finally(() => setRecentLoading(false));
-  }, []);
+  }, [advanceStep]);
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -52,6 +74,7 @@ export default function Home() {
             : undefined,
         },
       });
+      advanceStep("review");
       navigate(`/review/${reviewId}`);
     } catch (err) {
       setError(err instanceof Error ? err.message : "Failed to submit review");
@@ -60,138 +83,218 @@ export default function Home() {
     }
   };
 
+  const isFirstRun = !journeyLoading && !recentLoading && recent.length === 0 && currentStep === "submit";
+
+  const activeStep = journeySteps.find((step) => step.id === currentStep);
+
   return (
-    <div className="max-w-xl mx-auto">
-      <h1 className="text-2xl font-bold mb-2">Submit PR Review</h1>
-      <p className="text-gray-400 mb-8">
-        Paste a BitBucket pull request URL to start an AI-powered code review.
-      </p>
-
-      <form onSubmit={handleSubmit} className="space-y-5">
+    <div className="space-y-6">
+      <div className="flex flex-wrap items-start justify-between gap-4">
         <div>
-          <label className="block text-sm text-gray-400 mb-1.5">PR URL</label>
-          <input
-            type="url"
-            value={prUrl}
-            onChange={(e) => setPrUrl(e.target.value)}
-            placeholder="https://bitbucket.org/workspace/repo/pull-requests/123"
-            className="w-full px-4 py-2.5 bg-gray-900 border border-gray-700 rounded-lg text-sm text-white placeholder-gray-600 focus:outline-none focus:border-blue-500 focus:ring-1 focus:ring-blue-500/20"
-          />
+          <div className="text-[11px] uppercase tracking-[0.45em] text-ink-600">Code Review Agent</div>
+          <h1 className="mt-2 text-2xl font-semibold text-ink-950">AI Code Review Agent</h1>
+          <p className="mt-2 text-sm text-ink-700">
+            Paste a Bitbucket pull request URL to start an AI-powered code review.
+          </p>
         </div>
-
-        <div>
-          <label className="block text-sm text-gray-400 mb-1.5">BitBucket Token</label>
-          <input
-            type="password"
-            value={token}
-            onChange={(e) => setToken(e.target.value)}
-            placeholder="Your BitBucket access token"
-            className="w-full px-4 py-2.5 bg-gray-900 border border-gray-700 rounded-lg text-sm text-white placeholder-gray-600 focus:outline-none focus:border-blue-500 focus:ring-1 focus:ring-blue-500/20"
-          />
+        <div className="flex items-center gap-2">
+          <div className="inline-flex items-center gap-2 border border-ink-900 bg-white px-3 py-2 text-xs text-ink-700">
+            <span className="h-2 w-2 bg-brand-500" />
+            Bitbucket
+          </div>
         </div>
+      </div>
 
-        {/* Review Options */}
-        <div className="border border-gray-700 rounded-lg overflow-hidden">
-          <button
-            type="button"
-            onClick={() => setShowOptions(!showOptions)}
-            className="w-full flex items-center justify-between px-4 py-2.5 bg-gray-900 text-sm text-gray-300 hover:bg-gray-800 transition-colors"
-          >
-            <span>Review Options</span>
-            <span className="text-gray-500">{showOptions ? "−" : "+"}</span>
-          </button>
-          {showOptions && (
-            <div className="px-4 py-4 bg-gray-900/50 space-y-4 border-t border-gray-700">
-              <label className="flex items-center gap-3 text-sm text-gray-300 cursor-pointer">
-                <input
-                  type="checkbox"
-                  checked={skipSecurity}
-                  onChange={(e) => setSkipSecurity(e.target.checked)}
-                  className="w-4 h-4 rounded border-gray-600 bg-gray-800 text-blue-500 focus:ring-blue-500/20"
-                />
-                Skip security analysis
-              </label>
-              <label className="flex items-center gap-3 text-sm text-gray-300 cursor-pointer">
-                <input
-                  type="checkbox"
-                  checked={skipDuplication}
-                  onChange={(e) => setSkipDuplication(e.target.checked)}
-                  className="w-4 h-4 rounded border-gray-600 bg-gray-800 text-blue-500 focus:ring-blue-500/20"
-                />
-                Skip duplication analysis
-              </label>
-              <div>
-                <label className="block text-sm text-gray-400 mb-1.5">
-                  Priority Files (comma-separated)
-                </label>
-                <input
-                  type="text"
-                  value={priorityFiles}
-                  onChange={(e) => setPriorityFiles(e.target.value)}
-                  placeholder="src/api/auth.ts, src/db/queries.ts"
-                  className="w-full px-4 py-2.5 bg-gray-900 border border-gray-700 rounded-lg text-sm text-white placeholder-gray-600 focus:outline-none focus:border-blue-500 focus:ring-1 focus:ring-blue-500/20"
-                />
+      <div className={panelClass}>
+        <div className="flex flex-wrap items-center gap-4">
+          {journeySteps.map((step) => {
+            const status = getJourneyStatus(currentStep, step.id);
+            const bar =
+              status === "complete"
+                ? "bg-brand-500"
+                : status === "current"
+                ? "bg-brand-500/70"
+                : "bg-warm-200";
+            const label =
+              status === "current"
+                ? "text-brand-600"
+                : status === "complete"
+                ? "text-emerald-600"
+                : "text-ink-600";
+            return (
+              <div key={step.id} className="flex-1 min-w-[140px]">
+                <div className={`h-1 ${bar}`} />
+                <div className={`mt-2 text-[10px] uppercase tracking-[0.35em] ${label}`}>
+                  {step.sidebarLabel}
+                </div>
               </div>
+            );
+          })}
+        </div>
+        <div className="mt-4 flex flex-wrap items-center justify-between gap-3 text-xs text-ink-600">
+          <span>{activeStep?.description}</span>
+          {activeStep?.hint && (
+            <span className="text-brand-600">{activeStep.hint}</span>
+          )}
+        </div>
+      </div>
+
+      {isFirstRun && (
+        <section className={panelSoftClass}>
+          <div className="flex flex-wrap items-center justify-between gap-6">
+            <div>
+              <span className={badgeBrandClass}>Empty dashboard</span>
+              <h2 className="mt-3 text-lg font-semibold text-ink-950">Go, complete step one</h2>
+              <p className="mt-2 text-sm text-ink-700">
+                Your dashboard is empty until the first review finishes. Start with the PR URL and token below.
+              </p>
+            </div>
+            <a href="#new-review" className={buttonPrimaryClass}>
+              Start review
+            </a>
+          </div>
+        </section>
+      )}
+
+      <div className="grid grid-cols-1 xl:grid-cols-[minmax(0,1.15fr)_minmax(0,0.85fr)] gap-6">
+        <div className={panelClass} id="new-review">
+          <div className="flex items-center justify-between">
+            <div className={panelTitleClass}>Review setup</div>
+            {isFirstRun && <span className={badgeBrandClass}>Step 1</span>}
+          </div>
+
+          <form onSubmit={handleSubmit} className="mt-5 space-y-5">
+            <div>
+              <label htmlFor="pr-url" className={labelClass}>PR URL</label>
+              <input
+                id="pr-url"
+                type="url"
+                value={prUrl}
+                onChange={(e) => setPrUrl(e.target.value)}
+                placeholder="https://bitbucket.org/workspace/repo/pull-requests/123"
+                className={`${inputClass} mt-2`}
+                autoComplete="url"
+              />
+            </div>
+
+            <div>
+              <label htmlFor="token" className={labelClass}>Bitbucket Token</label>
+              <input
+                id="token"
+                type="password"
+                value={token}
+                onChange={(e) => setToken(e.target.value)}
+                placeholder="Your Bitbucket access token…"
+                className={`${inputClass} mt-2`}
+                autoComplete="current-password"
+              />
+            </div>
+
+            <div className="border border-ink-900 bg-warm-50">
+              <button
+                type="button"
+                onClick={() => setShowOptions(!showOptions)}
+                className="flex w-full items-center justify-between px-4 py-3 text-[10px] uppercase tracking-[0.35em] text-ink-600 hover:text-ink-900 transition"
+              >
+                Review options
+                <span>{showOptions ? "−" : "+"}</span>
+              </button>
+              {showOptions && (
+                <div className="border-t border-ink-900 px-4 py-4 space-y-4">
+                  <label className="flex items-center gap-3 text-xs text-ink-700 cursor-pointer">
+                    <input
+                      type="checkbox"
+                      checked={skipSecurity}
+                      onChange={(e) => setSkipSecurity(e.target.checked)}
+                      className="h-4 w-4 border-ink-900 bg-white accent-brand-500"
+                    />
+                    Skip security analysis
+                  </label>
+                  <label className="flex items-center gap-3 text-xs text-ink-700 cursor-pointer">
+                    <input
+                      type="checkbox"
+                      checked={skipDuplication}
+                      onChange={(e) => setSkipDuplication(e.target.checked)}
+                      className="h-4 w-4 border-ink-900 bg-white accent-brand-500"
+                    />
+                    Skip duplication analysis
+                  </label>
+                  <div>
+                    <label htmlFor="priority-files" className={labelClass}>Priority Files</label>
+                    <input
+                      id="priority-files"
+                      type="text"
+                      value={priorityFiles}
+                      onChange={(e) => setPriorityFiles(e.target.value)}
+                      placeholder="src/api/auth.ts, src/db/queries.ts…"
+                      className={`${inputClass} mt-2`}
+                    />
+                  </div>
+                </div>
+              )}
+            </div>
+
+            {error && (
+              <div className="border border-rose-400/50 bg-rose-50 p-3 text-xs text-rose-700">
+                {error}
+              </div>
+            )}
+
+            <button type="submit" disabled={loading} className={`${buttonPrimaryClass} w-full`}>
+              {loading ? "Submitting…" : "Start Review"}
+            </button>
+          </form>
+        </div>
+
+        <div className={panelClass}>
+          <div className="flex items-center justify-between">
+            <div className={panelTitleClass}>Recent Reviews</div>
+            <span className="text-[10px] uppercase tracking-[0.35em] text-ink-600">Last 10</span>
+          </div>
+
+          {recentLoading && <div className="mt-4 text-xs text-ink-600">Loading…</div>}
+
+          {!recentLoading && recent.length === 0 && (
+            <div className="mt-6 border border-dashed border-ink-900 bg-warm-50 p-6 text-sm text-ink-700">
+              <div className="text-[10px] uppercase tracking-[0.3em] text-ink-600">Empty state</div>
+              <p className="mt-2">
+                No completed reviews yet. Step 3 will appear here when your first review finishes.
+              </p>
+            </div>
+          )}
+
+          {recent.length > 0 && (
+            <div className="mt-4 overflow-hidden border border-ink-900">
+              <table className="w-full text-left text-xs">
+                <thead>
+                  <tr>
+                    <th className={tableHeaderClass}>Review</th>
+                    <th className={`${tableHeaderClass} text-right`}>Findings</th>
+                    <th className={`${tableHeaderClass} text-right`}>Duration</th>
+                    <th className={`${tableHeaderClass} text-right`}>Cost</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {recent.map((review) => (
+                    <tr key={review.id} className={tableRowClass}>
+                      <td className={tableCellClass}>
+                        <Link
+                          to={`/review/${review.id}/results`}
+                          className="font-mono text-[11px] text-brand-600 hover:underline"
+                        >
+                          {review.id.slice(0, 8)}…
+                        </Link>
+                      </td>
+                      <td className={`${tableCellClass} text-right tabular-nums`}>{review.totalFindings}</td>
+                      <td className={`${tableCellClass} text-right tabular-nums`}>{(review.durationMs / 1000).toFixed(1)}s</td>
+                      <td className={`${tableCellClass} text-right tabular-nums`}>${review.costUsd.toFixed(4)}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
             </div>
           )}
         </div>
-
-        {error && (
-          <div className="p-3 bg-red-900/30 border border-red-800 rounded-lg text-sm text-red-300">
-            {error}
-          </div>
-        )}
-
-        <button
-          type="submit"
-          disabled={loading}
-          className="w-full py-2.5 bg-blue-600 hover:bg-blue-500 disabled:opacity-50 disabled:cursor-not-allowed rounded-lg text-sm font-medium transition-colors"
-        >
-          {loading ? "Submitting..." : "Start Review"}
-        </button>
-      </form>
-
-      <div className="mt-12">
-        <div className="flex items-center justify-between mb-3">
-          <h2 className="text-lg font-semibold">Recent Reviews</h2>
-          <span className="text-xs text-gray-500">Last 10</span>
-        </div>
-        {recentLoading && (
-          <div className="text-sm text-gray-500">Loading recent reviews...</div>
-        )}
-        {!recentLoading && recent.length === 0 && (
-          <div className="text-sm text-gray-600">No completed reviews yet.</div>
-        )}
-        {recent.length > 0 && (
-          <div className="bg-gray-900 border border-gray-800 rounded-lg overflow-hidden">
-            <div className="grid grid-cols-[1fr_100px_100px_100px] gap-2 px-4 py-2 border-b border-gray-800 text-xs text-gray-500">
-              <span>Review</span>
-              <span className="text-right">Findings</span>
-              <span className="text-right">Duration</span>
-              <span className="text-right">Cost</span>
-            </div>
-            {recent.map((review) => (
-              <Link
-                key={review.id}
-                to={`/review/${review.id}/results`}
-                className="grid grid-cols-[1fr_100px_100px_100px] gap-2 px-4 py-2.5 border-b border-gray-800/50 text-sm hover:bg-gray-800/30 transition-colors"
-              >
-                <span className="text-gray-200 font-mono text-xs truncate">
-                  {review.id}
-                </span>
-                <span className="text-right text-gray-400 font-mono text-xs">
-                  {review.totalFindings}
-                </span>
-                <span className="text-right text-gray-400 font-mono text-xs">
-                  {(review.durationMs / 1000).toFixed(1)}s
-                </span>
-                <span className="text-right text-gray-400 font-mono text-xs">
-                  ${review.costUsd.toFixed(4)}
-                </span>
-              </Link>
-            ))}
-          </div>
-        )}
       </div>
     </div>
   );

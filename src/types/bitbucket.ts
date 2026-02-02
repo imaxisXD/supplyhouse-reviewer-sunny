@@ -39,8 +39,3 @@ export interface DiffChange {
   content: string;
 }
 
-export interface InlineComment {
-  file: string;
-  line: number;
-  content: string;
-}

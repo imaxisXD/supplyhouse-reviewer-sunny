@@ -63,6 +63,7 @@ export interface ReviewResult {
       byCategory?: Record<Category, number>;
     };
     recommendation?: string;
+    confidenceScore?: number;
   };
   traces?: AgentTrace[];
   prUrl?: string;

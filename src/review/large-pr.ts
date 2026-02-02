@@ -23,6 +23,22 @@ const TOKEN_BUDGET = 500_000;
 /** Rough estimate: 1 line of code ≈ 10 tokens. */
 const TOKENS_PER_LINE = 10;
 
+/** File extensions that are binary / non-reviewable. */
+const BINARY_EXTENSIONS = new Set([
+  ".png", ".jpg", ".jpeg", ".gif", ".bmp", ".ico", ".svg", ".webp",
+  ".pdf", ".zip", ".tar", ".gz", ".bz2", ".7z", ".rar",
+  ".exe", ".dll", ".so", ".dylib", ".o", ".a", ".lib",
+  ".pyc", ".pyo", ".class", ".jar", ".war",
+  ".woff", ".woff2", ".ttf", ".eot", ".otf",
+  ".mp3", ".mp4", ".avi", ".mov", ".wav", ".flac",
+  ".sqlite", ".db", ".lock",
+]);
+
+function isBinaryPath(filePath: string): boolean {
+  const ext = filePath.lastIndexOf(".") >= 0 ? filePath.slice(filePath.lastIndexOf(".")).toLowerCase() : "";
+  return BINARY_EXTENSIONS.has(ext);
+}
+
 export interface PrioritizedFile {
   file: DiffFile;
   priority: number;
@@ -38,8 +54,29 @@ export interface PrioritizedFile {
  * Files that exceed the total cap are dropped entirely.
  */
 export function prioritizeFiles(diffFiles: DiffFile[], userPriorityFiles?: string[]): PrioritizedFile[] {
+  // Filter out binary files before scoring
+  const reviewableFiles = diffFiles.filter((file) => {
+    if (isBinaryPath(file.path)) {
+      log.debug({ path: file.path }, "Skipping binary file");
+      return false;
+    }
+    // Also skip files whose diff contains only "Binary files differ"
+    if (file.diff.includes("Binary files") && file.additions === 0 && file.deletions === 0) {
+      log.debug({ path: file.path }, "Skipping binary diff");
+      return false;
+    }
+    return true;
+  });
+
+  if (reviewableFiles.length < diffFiles.length) {
+    log.info(
+      { total: diffFiles.length, reviewable: reviewableFiles.length, binary: diffFiles.length - reviewableFiles.length },
+      "Filtered out binary files",
+    );
+  }
+
   // Score each file
-  const scored = diffFiles.map((file) => {
+  const scored = reviewableFiles.map((file) => {
     const linesChanged = file.additions + file.deletions;
     let score = calculateFilePriority(file.path, linesChanged);
 

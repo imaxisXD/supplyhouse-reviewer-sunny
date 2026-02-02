@@ -314,8 +314,6 @@ interface FunctionRange {
  * Supports common patterns:
  *   - `function name(` / `async function name(`
  *   - `name(` / `name = (` / `name = async (`  at the start of a line
- *   - `def name(` (Python)
- *   - `fn name(` (Rust)
  *   - Method definitions in classes
  *
  * Uses brace/indentation counting to find the end of each function.
@@ -331,10 +329,12 @@ function detectFunctionRanges(lines: string[]): FunctionRange[] {
     /(?:const|let|var)\s+(\w+)\s*=\s*(?:async\s+)?\(/,
     // JS/TS: name(...) { -- method in class
     /^\s+(?:async\s+)?(\w+)\s*\([^)]*\)\s*(?::\s*\w[^{]*)?\{/,
-    // Python: def name(
-    /^(?:\s*)def\s+(\w+)\s*\(/,
-    // Rust: fn name(, pub fn name(
-    /(?:pub\s+)?fn\s+(\w+)\s*\(/,
+    // Java/Kotlin: public/private/protected [static] [async] ReturnType name(
+    /^\s*(?:public|private|protected)\s+(?:static\s+)?(?:final\s+)?(?:async\s+)?(?:\w+(?:<[^>]+>)?)\s+(\w+)\s*\(/,
+    // Java: @Override style annotations followed by method
+    /^\s*(?:@\w+\s+)*(?:public|private|protected)\s+.*\s+(\w+)\s*\(/,
+    // Dart: ReturnType name(, Future<ReturnType> name(, void name(
+    /^\s*(?:static\s+)?(?:Future<[^>]+>|Stream<[^>]+>|void|int|double|String|bool|List<[^>]+>|Map<[^>]+>|Set<[^>]+>|\w+)\s+(\w+)\s*\(/,
   ];
 
   for (let i = 0; i < lines.length; i++) {

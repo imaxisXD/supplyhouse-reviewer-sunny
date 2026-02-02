@@ -4,6 +4,9 @@ import { getReviewStatus, connectWebSocket, cancelReview } from "../api/client";
 import type { ReviewStatus as ReviewStatusType, WSEvent } from "../api/client";
 import ProgressBar from "../components/ProgressBar";
 import PhaseIndicator from "../components/PhaseIndicator";
+import { advanceJourneyStep } from "../journey";
+
+const pillBaseClass = "border px-2.5 py-1 text-xs";
 
 interface LiveFinding {
   file: string;
@@ -29,6 +32,10 @@ export default function ReviewStatus() {
   const [cancelling, setCancelling] = useState(false);
   const cleanupRef = useRef<(() => void) | null>(null);
   const feedRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    void advanceJourneyStep("review");
+  }, []);
 
   useEffect(() => {
     if (!id) return;
@@ -133,34 +140,37 @@ export default function ReviewStatus() {
   const severityColor = (severity: string): string => {
     switch (severity) {
       case "critical":
-        return "text-red-400";
+        return "text-rose-700";
       case "high":
-        return "text-orange-400";
+        return "text-orange-700";
       case "medium":
-        return "text-yellow-400";
+        return "text-amber-700";
       case "low":
-        return "text-blue-400";
+        return "text-sky-700";
       default:
-        return "text-gray-400";
+        return "text-ink-600";
     }
   };
 
   if (error) {
     return (
-      <div className="max-w-2xl mx-auto">
-        <h1 className="text-2xl font-bold mb-1">Review Failed</h1>
-        <p className="text-gray-500 text-sm mb-8 font-mono">{id}</p>
-        <div className="p-4 bg-red-900/30 border border-red-800 rounded-lg">
-          <p className="text-red-300 text-sm">{error}</p>
+      <div className="mx-auto max-w-2xl space-y-6">
+        <div>
+          <div className="text-[11px] uppercase tracking-[0.45em] text-ink-600">Review</div>
+          <h1 className="mt-2 text-2xl font-semibold text-ink-950">Review Failed</h1>
+          <p className="mt-2 text-sm font-mono text-ink-600">{id}</p>
+        </div>
+        <div className="border border-rose-400/50 bg-rose-50 p-4">
+          <p className="text-sm text-rose-700">{error}</p>
         </div>
         {completedAgents.length > 0 && (
-          <div className="mt-6">
-            <p className="text-sm text-gray-400 mb-2">Agents Completed Before Failure</p>
+          <div>
+            <p className="text-sm text-ink-700 mb-2">Agents Completed Before Failure</p>
             <div className="flex gap-2 flex-wrap">
               {completedAgents.map((a, i) => (
                 <span
                   key={`${a.agent}-${i}`}
-                  className="px-2.5 py-1 bg-green-900/30 border border-green-800 text-green-300 text-xs rounded-full"
+                  className={`${pillBaseClass} border-emerald-500/40 bg-emerald-50 text-emerald-700`}
                 >
                   {a.agent} ({a.findingsCount} findings)
                 </span>
@@ -174,47 +184,52 @@ export default function ReviewStatus() {
 
   if (!status) {
     return (
-      <div className="max-w-xl mx-auto text-center py-16 text-gray-500">
+      <div className="mx-auto max-w-xl text-center py-16 text-ink-600">
         Loading review status...
       </div>
     );
   }
 
   return (
-    <div className="max-w-2xl mx-auto">
-      <div className="flex items-center justify-between mb-1">
-        <h1 className="text-2xl font-bold">Review in Progress</h1>
+    <div className="mx-auto max-w-2xl space-y-6">
+      <div>
+        <div className="flex items-center justify-between">
+          <div>
+            <div className="text-[11px] uppercase tracking-[0.45em] text-ink-600">Review</div>
+            <h1 className="mt-2 text-2xl font-semibold text-ink-950">Review in Progress</h1>
+          </div>
         {status.phase !== "complete" && status.phase !== "failed" && (
           <button
             type="button"
             onClick={handleCancel}
             disabled={cancelling}
-            className="px-3 py-1.5 text-xs rounded-lg border border-red-800 text-red-300 hover:bg-red-900/30 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
+            className="inline-flex items-center justify-center gap-2 border border-rose-400/50 bg-white px-4 py-2 text-[11px] font-semibold uppercase tracking-[0.3em] text-rose-700 transition hover:border-rose-500"
           >
             {cancelling ? "Cancelling..." : "Cancel Review"}
           </button>
         )}
+        </div>
+        <p className="mt-2 text-sm font-mono text-ink-600">{id}</p>
       </div>
-      <p className="text-gray-500 text-sm mb-8 font-mono">{id}</p>
 
       <div className="space-y-8">
         <PhaseIndicator currentPhase={status.phase} />
         <ProgressBar percentage={status.percentage} label="Overall Progress" />
 
         {status.currentFile && (
-          <div className="text-sm text-gray-400">
-            Analyzing: <span className="text-gray-200 font-mono">{status.currentFile}</span>
+          <div className="text-sm text-ink-700">
+            Analyzing: <span className="text-ink-900 font-mono">{status.currentFile}</span>
           </div>
         )}
 
         {status.agentsRunning && status.agentsRunning.length > 0 && (
           <div>
-            <p className="text-sm text-gray-400 mb-2">Active Agents</p>
+            <p className="text-sm text-ink-700 mb-2">Active Agents</p>
             <div className="flex gap-2 flex-wrap">
               {status.agentsRunning.map((agent) => (
                 <span
                   key={agent}
-                  className="px-2.5 py-1 bg-blue-900/30 border border-blue-800 text-blue-300 text-xs rounded-full animate-pulse"
+                  className={`${pillBaseClass} border-brand-500/40 bg-brand-500/10 text-brand-700 animate-pulse`}
                 >
                   {agent}
                 </span>
@@ -225,12 +240,12 @@ export default function ReviewStatus() {
 
         {completedAgents.length > 0 && (
           <div>
-            <p className="text-sm text-gray-400 mb-2">Completed Agents</p>
+            <p className="text-sm text-ink-700 mb-2">Completed Agents</p>
             <div className="flex gap-2 flex-wrap">
               {completedAgents.map((a, i) => (
                 <span
                   key={`${a.agent}-${i}`}
-                  className="px-2.5 py-1 bg-green-900/30 border border-green-800 text-green-300 text-xs rounded-full"
+                  className={`${pillBaseClass} border-emerald-500/40 bg-emerald-50 text-emerald-700`}
                 >
                   {a.agent}
                   <span className="ml-1.5 opacity-70">
@@ -243,18 +258,18 @@ export default function ReviewStatus() {
         )}
 
         <div>
-          <p className="text-sm text-gray-400 mb-2">
+          <p className="text-sm text-ink-700 mb-2">
             Live Findings Feed
             {liveFindings.length > 0 && (
-              <span className="ml-2 text-gray-600">({liveFindings.length})</span>
+              <span className="ml-2 text-ink-600">({liveFindings.length})</span>
             )}
           </p>
           <div
             ref={feedRef}
-            className="bg-gray-900 border border-gray-800 rounded-lg p-3 max-h-80 overflow-y-auto space-y-1.5"
+            className="border border-ink-900 bg-warm-50 p-3 max-h-80 overflow-y-auto space-y-1.5"
           >
             {liveFindings.length === 0 && (
-              <p className="text-gray-600 text-sm">Waiting for findings...</p>
+              <p className="text-ink-600 text-sm">Waiting for findings...</p>
             )}
             {liveFindings.map((f, i) => (
               <div
@@ -266,11 +281,11 @@ export default function ReviewStatus() {
                 >
                   {f.severity}
                 </span>
-                <span className="text-gray-200 flex-1 min-w-0 truncate">{f.title}</span>
-                <span className="text-gray-500 font-mono shrink-0">
+                <span className="text-ink-900 flex-1 min-w-0 truncate">{f.title}</span>
+                <span className="text-ink-600 font-mono shrink-0">
                   {f.file}:{f.line}
                 </span>
-                <span className="text-gray-600 shrink-0">{f.agent}</span>
+                <span className="text-ink-500 shrink-0">{f.agent}</span>
               </div>
             ))}
           </div>

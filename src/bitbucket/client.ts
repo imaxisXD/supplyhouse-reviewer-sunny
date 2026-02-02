@@ -223,6 +223,49 @@ export class BitBucketClient {
   }
 
   // ---------------------------------------------------------------------------
+  // Update Comment
+  // ---------------------------------------------------------------------------
+
+  /**
+   * Update an existing comment on a pull request.
+   * PUT /repositories/{workspace}/{repo_slug}/pullrequests/{pr_id}/comments/{comment_id}
+   */
+  async updateComment(
+    workspace: string,
+    repoSlug: string,
+    prId: number,
+    token: string,
+    commentId: string,
+    content: string,
+  ): Promise<{ id: string }> {
+    const endpoint = `/repositories/${workspace}/${repoSlug}/pullrequests/${prId}/comments/${commentId}`;
+
+    return withRetry(
+      async () => {
+        const url = `${this.baseUrl}${endpoint}`;
+        log.debug({ url, commentId }, "Updating comment");
+
+        const response = await fetch(url, {
+          method: "PUT",
+          headers: {
+            ...buildHeaders(token),
+            "Content-Type": "application/json",
+          },
+          body: JSON.stringify({
+            content: { raw: content },
+          }),
+        });
+
+        await this.assertOk(response, endpoint);
+        const body = (await response.json()) as Record<string, unknown>;
+
+        return { id: String(body.id) };
+      },
+      { retryOn: shouldRetry },
+    );
+  }
+
+  // ---------------------------------------------------------------------------
   // Helpers
   // ---------------------------------------------------------------------------
 
