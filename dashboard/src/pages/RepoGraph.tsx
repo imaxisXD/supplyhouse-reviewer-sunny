@@ -124,7 +124,7 @@ export default function RepoGraph() {
     );
     if (match && match.x != null && match.y != null && match.z != null) {
       const distance = 180;
-      const distRatio = 1 + distance / Math.hypot(match.x, match.y, match.z || 1);
+      const distRatio = 1 + distance / (Math.hypot(match.x, match.y, match.z) || 1);
       fgRef.current.cameraPosition(
         { x: match.x * distRatio, y: match.y * distRatio, z: match.z * distRatio },
         { x: match.x, y: match.y, z: match.z },
@@ -269,7 +269,7 @@ export default function RepoGraph() {
       setSelectedNode((prev) => (prev?.id === node.id ? null : node));
       if (node.x != null && node.y != null && node.z != null && fgRef.current) {
         const distance = 180;
-        const distRatio = 1 + distance / Math.hypot(node.x, node.y, node.z || 1);
+        const distRatio = 1 + distance / (Math.hypot(node.x, node.y, node.z) || 1);
         fgRef.current.cameraPosition(
           { x: node.x * distRatio, y: node.y * distRatio, z: node.z * distRatio },
           { x: node.x, y: node.y, z: node.z },
