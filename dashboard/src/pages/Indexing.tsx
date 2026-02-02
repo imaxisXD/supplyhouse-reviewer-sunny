@@ -254,6 +254,7 @@ export default function Indexing() {
                         <option value="react">React</option>
                         <option value="typescript">TypeScript</option>
                         <option value="java">Java</option>
+                        <option value="spring-boot">Spring Boot</option>
                         <option value="flutter">Flutter</option>
                         <option value="ftl">FTL (FreeMarker)</option>
                       </>

@@ -271,6 +271,18 @@ export class BitBucketClient {
     const destination = raw.destination as Record<string, unknown> | undefined;
     const sourceBranch = source?.branch as Record<string, unknown> | undefined;
     const destBranch = destination?.branch as Record<string, unknown> | undefined;
+    const sourceRepo = source?.repository as Record<string, unknown> | undefined;
+    const sourceWorkspaceObj = sourceRepo?.workspace as Record<string, unknown> | undefined;
+    const sourceWorkspace = (sourceWorkspaceObj?.slug as string) ?? "";
+    const sourceRepoSlug = (sourceRepo?.slug as string) ?? "";
+    const sourceFullName = (sourceRepo?.full_name as string) ?? "";
+    let parsedWorkspace = sourceWorkspace;
+    let parsedRepoSlug = sourceRepoSlug;
+    if ((!parsedWorkspace || !parsedRepoSlug) && sourceFullName.includes("/")) {
+      const [ws, slug] = sourceFullName.split("/");
+      if (!parsedWorkspace && ws) parsedWorkspace = ws;
+      if (!parsedRepoSlug && slug) parsedRepoSlug = slug;
+    }
 
     return {
       id: raw.id as number,
@@ -282,6 +294,8 @@ export class BitBucketClient {
       },
       sourceBranch: (sourceBranch?.name as string) ?? "",
       targetBranch: (destBranch?.name as string) ?? "",
+      sourceWorkspace: parsedWorkspace || undefined,
+      sourceRepoSlug: parsedRepoSlug || undefined,
       state: (raw.state as string) ?? "",
       createdOn: (raw.created_on as string) ?? "",
       updatedOn: (raw.updated_on as string) ?? "",

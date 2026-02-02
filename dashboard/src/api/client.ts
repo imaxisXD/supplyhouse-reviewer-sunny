@@ -311,9 +311,13 @@ export function connectWebSocket(
       }
     };
 
-    ws.onclose = () => {
+    ws.onclose = (event) => {
       onClose?.();
       if (closed) return;
+      if (event.code === 4000 || event.code === 4001) {
+        closed = true;
+        return;
+      }
       const delay = Math.min(1000 * Math.pow(2, retryCount), 10000);
       retryCount += 1;
       retryTimer = window.setTimeout(connect, delay);
@@ -366,9 +370,13 @@ export function connectIndexWebSocket(
       }
     };
 
-    ws.onclose = () => {
+    ws.onclose = (event) => {
       onClose?.();
       if (closed) return;
+      if (event.code === 4000 || event.code === 4001) {
+        closed = true;
+        return;
+      }
       const delay = Math.min(1000 * Math.pow(2, retryCount), 10000);
       retryCount += 1;
       retryTimer = window.setTimeout(connect, delay);

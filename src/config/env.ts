@@ -34,6 +34,9 @@ const envSchema = z.object({
   // WebSocket auth
   WS_AUTH_TOKEN: z.string().optional(),
 
+  // Token encryption (Bitbucket tokens in Redis)
+  TOKEN_ENCRYPTION_KEY: z.string().optional(),
+
   // CORS
   CORS_ORIGIN: z.string().optional(),
 });
@@ -57,6 +60,11 @@ function validateEnv(): Env {
       console.error("WS_AUTH_TOKEN is required in production.");
       process.exit(1);
     }
+  }
+
+  if (!data.TOKEN_ENCRYPTION_KEY) {
+    console.error("TOKEN_ENCRYPTION_KEY is required to encrypt Bitbucket tokens.");
+    process.exit(1);
   }
 
   return data;

@@ -8,7 +8,7 @@ import { deriveRepoIdFromUrl } from "../utils/repo-identity.ts";
 import { indexCancelKey, markCancelled } from "../utils/cancellation.ts";
 
 const log = createLogger("api:index");
-const FRAMEWORK_IDS = ["react", "typescript", "java", "flutter", "ftl"] as const;
+const FRAMEWORK_IDS = ["react", "typescript", "java", "spring-boot", "flutter", "ftl"] as const;
 const FrameworkSchema = t.Union(FRAMEWORK_IDS.map((id) => t.Literal(id)));
 
 export const indexRoutes = new Elysia({ prefix: "/api/index" })
@@ -141,6 +141,18 @@ export const indexRoutes = new Elysia({ prefix: "/api/index" })
   .delete("/:id", async ({ params, set }) => {
     const { id } = params;
     try {
+      const statusData = await redis.get(`index:${id}`);
+      if (statusData) {
+        try {
+          const status = JSON.parse(statusData);
+          if (status.phase === "complete" || status.phase === "failed") {
+            return { message: `Index job already ${status.phase}` };
+          }
+        } catch {
+          // Ignore parse errors
+        }
+      }
+
       // Set cancel flag — worker will see it on next assertNotCancelled call
       await markCancelled(indexCancelKey(id));
 
@@ -161,13 +173,16 @@ export const indexRoutes = new Elysia({ prefix: "/api/index" })
         }
       }
 
-      const statusData = await redis.get(`index:${id}`);
-      if (statusData) {
-        const status = JSON.parse(statusData);
-        status.phase = "failed";
-        status.error = "Cancelled by user";
-        status.completedAt = new Date().toISOString();
-        await redis.set(`index:${id}`, JSON.stringify(status));
+      if (!jobIsActive && statusData) {
+        try {
+          const status = JSON.parse(statusData);
+          status.phase = "failed";
+          status.error = "Cancelled by user";
+          status.completedAt = new Date().toISOString();
+          await redis.set(`index:${id}`, JSON.stringify(status));
+        } catch {
+          // Ignore parse errors
+        }
       }
 
       // Only emit from here when the worker is NOT active.
@@ -194,6 +209,7 @@ export const indexRoutes = new Elysia({ prefix: "/api/index" })
         { id: "react", name: "React", languages: ["TypeScript", "JavaScript"] },
         { id: "typescript", name: "TypeScript", languages: ["TypeScript"] },
         { id: "java", name: "Java", languages: ["Java"] },
+        { id: "spring-boot", name: "Spring Boot", languages: ["Java"] },
         { id: "flutter", name: "Flutter", languages: ["Dart"] },
         { id: "ftl", name: "FTL (FreeMarker)", languages: ["FTL"] },
       ],

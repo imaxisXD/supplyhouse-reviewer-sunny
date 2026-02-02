@@ -2,7 +2,7 @@
  * Framework / stack detector.
  *
  * Inspects a cloned repository's file system to determine which framework
- * (React, TypeScript, Java, Flutter, FTL) is being used.
+ * (React, TypeScript, Java, Spring Boot, Flutter, FTL) is being used.
  * Returns a sorted list of detections ordered by confidence (highest first).
  */
 
@@ -69,6 +69,21 @@ const FRAMEWORK_INDICATORS: FrameworkIndicator[] = [
   },
 
   // -- Java --------------------------------------------------------------
+  {
+    framework: "spring-boot",
+    indicatorFiles: ["pom.xml", "build.gradle", "build.gradle.kts"],
+    indicatorExtensions: [".java"],
+    weight: 0.25,
+    contentChecks: [
+      { file: "pom.xml", substring: "spring-boot-starter", weight: 0.45 },
+      { file: "pom.xml", substring: "org.springframework.boot", weight: 0.35 },
+      { file: "build.gradle", substring: "spring-boot-starter", weight: 0.45 },
+      { file: "build.gradle", substring: "org.springframework.boot", weight: 0.35 },
+      { file: "build.gradle.kts", substring: "spring-boot-starter", weight: 0.45 },
+      { file: "build.gradle.kts", substring: "org.springframework.boot", weight: 0.35 },
+    ],
+    excludePatterns: ["target", "build", ".gradle", ".mvn"],
+  },
   {
     framework: "java",
     indicatorFiles: ["pom.xml", "build.gradle", "build.gradle.kts"],

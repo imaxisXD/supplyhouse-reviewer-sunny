@@ -204,6 +204,13 @@ async function processIndexJob(job: IndexJob): Promise<void> {
     ]);
     await updateStatus(jobId, "detecting-framework", 25, { framework: primaryFramework, branch, repoUrl, repoId });
 
+    // ---- Full re-index: clear old data ----------------------------------
+    if (!job.incremental) {
+      await updateStatus(jobId, "parsing", 28);
+      await assertNotCancelled(cancelKey, "Index job cancelled");
+      await deleteRepoData(repoId);
+    }
+
     // ---- Incremental: delete old data for changed files -----------------
     if (job.incremental && job.changedFiles && job.changedFiles.length > 0) {
       await updateStatus(jobId, "parsing", 28);
@@ -322,6 +329,35 @@ async function processIndexJob(job: IndexJob): Promise<void> {
         log.warn({ jobId, cloneDir }, "Failed to clean up clone directory");
       }
     }
+  }
+}
+
+/**
+ * Clear all graph nodes and vector data for a repo before a full re-index.
+ */
+async function deleteRepoData(repoId: string): Promise<void> {
+  log.info({ repoId }, "Deleting existing data before full re-index");
+
+  try {
+    await runCypher(
+      "MATCH (n {repoId: $repoId}) DETACH DELETE n",
+      { repoId },
+    );
+  } catch (error) {
+    log.warn(
+      { repoId, error: error instanceof Error ? error.message : String(error) },
+      "Failed to delete old graph data",
+    );
+  }
+
+  const collection = collectionName(repoId);
+  try {
+    await qdrantBreaker.execute(() => qdrantClient.deleteCollection(collection));
+  } catch (error) {
+    log.warn(
+      { repoId, collection, error: error instanceof Error ? error.message : String(error) },
+      "Failed to delete old vector collection",
+    );
   }
 }
 
@@ -555,6 +591,10 @@ async function updateStatus(
     if (raw) current = JSON.parse(raw);
   } catch {
     // Ignore parse errors
+  }
+
+  if (current.phase === "complete" || current.phase === "failed") {
+    return;
   }
 
   const status: IndexStatus = {
