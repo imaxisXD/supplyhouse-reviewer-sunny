@@ -11,6 +11,7 @@ import { reviewRoutes } from "./api/review.ts";
 import { indexRoutes } from "./api/index-repo.ts";
 import { reviewsListRoutes } from "./api/reviews-list.ts";
 import { wsRoutes } from "./api/ws.ts";
+import { graphRoutes } from "./api/graph.ts";
 import { startReviewWorker } from "./queue/review-worker.ts";
 import { startIndexWorker } from "./queue/index-worker.ts";
 
@@ -86,6 +87,7 @@ const app = new Elysia()
   .use(indexRoutes)
   .use(reviewsListRoutes)
   .use(wsRoutes)
+  .use(graphRoutes)
   .listen({
     port,
     ...(tlsCert && tlsKey

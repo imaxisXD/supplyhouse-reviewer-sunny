@@ -252,6 +252,67 @@ export async function getMetrics(): Promise<Metrics> {
 }
 
 // ---------------------------------------------------------------------------
+// Graph APIs
+// ---------------------------------------------------------------------------
+
+export interface RepoInfo {
+  repoId: string;
+  fileCount: number;
+  functionCount: number;
+  classCount: number;
+}
+
+export type GraphNodeLabel = "File" | "Function" | "Class";
+
+export type GraphEdgeType =
+  | "CONTAINS"
+  | "CALLS"
+  | "IMPORTS"
+  | "HAS_METHOD"
+  | "EXTENDS"
+  | "IMPLEMENTS";
+
+export interface GraphNode {
+  id: string;
+  label: GraphNodeLabel;
+  name: string;
+  path?: string;
+  language?: string;
+  startLine?: number;
+  endLine?: number;
+  isExported?: boolean;
+  isAsync?: boolean;
+  params?: string;
+  returnType?: string;
+  extendsName?: string;
+  propertyCount?: number;
+  methodCount?: number;
+}
+
+export interface GraphLink {
+  source: string;
+  target: string;
+  type: GraphEdgeType;
+}
+
+export interface GraphData {
+  nodes: GraphNode[];
+  links: GraphLink[];
+}
+
+export async function getIndexedRepos(): Promise<{ repos: RepoInfo[] }> {
+  const res = await fetch(`${BASE_URL}/api/graph/repos`);
+  if (!res.ok) throw new Error(`Failed to get indexed repos: ${res.statusText}`);
+  return res.json();
+}
+
+export async function getRepoGraph(repoId: string): Promise<GraphData> {
+  const res = await fetch(`${BASE_URL}/api/graph/${encodeURIComponent(repoId)}`);
+  if (!res.ok) throw new Error(`Failed to get repo graph: ${res.statusText}`);
+  return res.json();
+}
+
+// ---------------------------------------------------------------------------
 // Health API
 // ---------------------------------------------------------------------------
 

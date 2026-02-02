@@ -8,7 +8,10 @@
       "WebFetch(domain:www.npmjs.com)",
       "Bash(cd /Users/abhishekmac/Desktop/Hobby\\\\ Projects/supplyhouse-reviewer-sunny && npx tsc:*)",
       "Bash(npx tsc:*)",
-      "Bash(cd:*)"
+      "Bash(cd:*)",
+      "Bash(xargs basename:*)",
+      "Bash(cd /Users/abhishekmac/Desktop/Hobby\\\\ Projects/supplyhouse-reviewer-sunny/dashboard && npx vite build:*)",
+      "mcp__ide__getDiagnostics"
     ]
   }
 }
