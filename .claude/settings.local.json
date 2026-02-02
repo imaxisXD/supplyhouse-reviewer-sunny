@@ -1,0 +1,14 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(bun:*)",
+      "WebSearch",
+      "WebFetch(domain:elysiajs.com)",
+      "WebFetch(domain:mastra.ai)",
+      "WebFetch(domain:www.npmjs.com)",
+      "Bash(cd /Users/abhishekmac/Desktop/Hobby\\\\ Projects/supplyhouse-reviewer-sunny && npx tsc:*)",
+      "Bash(npx tsc:*)",
+      "Bash(cd:*)"
+    ]
+  }
+}

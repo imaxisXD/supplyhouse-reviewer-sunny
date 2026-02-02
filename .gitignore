@@ -1,0 +1,37 @@
+# dependencies
+node_modules
+
+# build output
+dist
+
+# environment variables
+.env
+.env.development.local
+.env.test.local
+.env.production.local
+.env.local
+
+# cloned repositories
+repos/
+
+# logs
+*.log
+
+# dashboard build
+dashboard/dist
+
+# macOS
+.DS_Store
+
+# caches
+.eslintcache
+.cache
+*.tsbuildinfo
+
+# coverage
+coverage
+*.lcov
+
+# IDE
+.idea
+.vscode
