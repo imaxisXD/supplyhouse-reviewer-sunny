@@ -847,7 +847,7 @@ export async function executeReview(job: ReviewJob, sessionLogger?: Logger): Pro
       }
     }
 
-    const inlineFindings = filterFindingsForInline(verifiedFindings);
+    const inlineFindings = filterFindingsForInline(verifiedFindings).filter(f => !f.unlocatable);
     const inlineSuppressed = Math.max(verifiedFindings.length - inlineFindings.length, 0);
     log.debug(
       {
