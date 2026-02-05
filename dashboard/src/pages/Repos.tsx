@@ -1,5 +1,5 @@
 import { useState, useEffect } from "react";
-import { Link } from "react-router-dom";
+import { Link, useNavigate } from "react-router-dom";
 import { getIndexedRepos } from "../api/client";
 import type { RepoInfo } from "../api/client";
 import { advanceJourneyStep } from "../journey";
@@ -9,6 +9,7 @@ const panelClass =
 const statLabelClass = "text-[10px] uppercase tracking-[0.3em] text-ink-600";
 
 export default function Repos() {
+  const navigate = useNavigate();
   const [repos, setRepos] = useState<RepoInfo[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
@@ -53,10 +54,21 @@ export default function Repos() {
       {repos.length > 0 && (
         <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
           {repos.map((repo) => (
-            <Link
+            <div
               key={repo.repoId}
-              to={`/repo/${encodeURIComponent(repo.repoId)}`}
-              className={`${panelClass} hover:border-brand-500/50 transition-colors group`}
+              role="button"
+              tabIndex={0}
+              onClick={() => navigate(`/repo/${encodeURIComponent(repo.repoId)}`)}
+              onKeyDown={(event) => {
+                if (event.currentTarget !== event.target) {
+                  return;
+                }
+                if (event.key === "Enter" || event.key === " ") {
+                  event.preventDefault();
+                  navigate(`/repo/${encodeURIComponent(repo.repoId)}`);
+                }
+              }}
+              className={`${panelClass} hover:border-brand-500/50 transition-colors group cursor-pointer`}
             >
               <h3 className="text-sm font-semibold text-ink-950 group-hover:text-brand-600 transition-colors truncate mb-4">
                 {repo.repoId}
@@ -75,10 +87,23 @@ export default function Repos() {
                   <p className="text-lg font-bold text-amber-700">{repo.classCount}</p>
                 </div>
               </div>
-              <div className="mt-4 text-xs text-ink-600 group-hover:text-ink-800 transition-colors">
-                View knowledge graph →
+              <div className="mt-4 flex items-center justify-between text-xs text-ink-600 group-hover:text-ink-800 transition-colors">
+                <span>View knowledge graph →</span>
+                <button
+                  type="button"
+                  onClick={(event) => {
+                    event.stopPropagation();
+                    navigate(`/repo/${encodeURIComponent(repo.repoId)}/docs`);
+                  }}
+                  onKeyDown={(event) => {
+                    event.stopPropagation();
+                  }}
+                  className="text-brand-600 hover:underline"
+                >
+                  Docs →
+                </button>
               </div>
-            </Link>
+            </div>
           ))}
         </div>
       )}

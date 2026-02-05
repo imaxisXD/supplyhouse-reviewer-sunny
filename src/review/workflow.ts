@@ -67,6 +67,7 @@ import {
 } from "./diff-indexer.ts";
 import { buildDomainFactsIndex, type FileDomainFacts, type PrDomainFacts } from "./domain-facts.ts";
 import { applyEvidenceGates } from "./evidence-gates.ts";
+import { buildRepoDocsContext } from "./repo-docs-context.ts";
 
 const log = createLogger("review-workflow");
 const CLONE_BASE_DIR = process.env.CLONE_DIR || "/tmp/supplyhouse-repos";
@@ -693,6 +694,23 @@ export async function executeReview(job: ReviewJob, sessionLogger?: Logger): Pro
       prDomainFactsText ? `PR Domain Facts:\n${prDomainFactsText}` : "",
     ].filter(Boolean).join("\n");
 
+    let repoDocsContext: string | null = null;
+    try {
+      repoDocsContext = await buildRepoDocsContext({
+        repoId,
+        diffFiles,
+        prDetails,
+      });
+      if (repoDocsContext) {
+        log.info({ reviewId, repoId }, "Repo docs context prepared");
+      }
+    } catch (error) {
+      log.warn(
+        { reviewId, repoId, error: error instanceof Error ? error.message : String(error) },
+        "Failed to build repo docs context",
+      );
+    }
+
     // ------------------------------------------------------------------
     // Step 3: Build context
     // ------------------------------------------------------------------
@@ -760,7 +778,7 @@ export async function executeReview(job: ReviewJob, sessionLogger?: Logger): Pro
       { repoId, repoPath },
       cancelKey,
       hasEmbeddings,
-      { prFacts, plannerNotes: combinedPlannerNotes },
+      { prFacts, plannerNotes: combinedPlannerNotes, repoDocs: repoDocsContext ?? undefined },
     );
     const agentsDurationMs = Date.now() - agentsStart;
     log.info(
@@ -1288,7 +1306,7 @@ function formatDomainFacts(facts?: FileDomainFacts): string {
  */
 function formatContextText(
   ctx: ContextPackage,
-  extras?: { prFacts?: string; plannerNotes?: string },
+  extras?: { prFacts?: string; plannerNotes?: string; repoDocs?: string },
 ): string {
   const annotatedDiff = annotateDiffWithLineNumbers(ctx.diff);
   const domainFactsText = formatDomainFacts(ctx.domainFacts);
@@ -1311,11 +1329,12 @@ function formatContextText(
  */
 function batchContextPackages(
   packages: ContextPackage[],
-  extras?: { prFacts?: string; plannerNotes?: string },
+  extras?: { prFacts?: string; plannerNotes?: string; repoDocs?: string },
 ): ContextPackage[][] {
   const batches: ContextPackage[][] = [];
   let currentBatch: ContextPackage[] = [];
-  let currentTokens = 0;
+  const fixedTokens = extras?.repoDocs ? estimateTokens(`### Repo Docs\n${extras.repoDocs}`) : 0;
+  let currentTokens = fixedTokens;
 
   for (const pkg of packages) {
     const text = formatContextText(pkg, extras);
@@ -1326,7 +1345,7 @@ function batchContextPackages(
       if (currentBatch.length > 0) {
         batches.push(currentBatch);
         currentBatch = [];
-        currentTokens = 0;
+        currentTokens = fixedTokens;
       }
       batches.push([pkg]);
       continue;
@@ -1335,7 +1354,7 @@ function batchContextPackages(
     if (currentTokens + tokens > MAX_TOKENS_PER_BATCH && currentBatch.length > 0) {
       batches.push(currentBatch);
       currentBatch = [];
-      currentTokens = 0;
+      currentTokens = fixedTokens;
     }
 
     currentBatch.push(pkg);
@@ -1362,13 +1381,24 @@ async function runAgents(
   repoContext: { repoId: string; repoPath: string },
   cancelKey: string,
   hasEmbeddings: boolean,
-  extras?: { prFacts?: string; plannerNotes?: string },
+  extras?: { prFacts?: string; plannerNotes?: string; repoDocs?: string },
 ): Promise<AgentResult> {
   await assertNotCancelled(cancelKey, "Review cancelled");
   const options = job.options || {};
+  const hasRepoDocsContext = Boolean(extras?.repoDocs);
+  const hasRepoDocsExcerpts = Boolean(extras?.repoDocs?.includes("#### Relevant Excerpts"));
 
   const batches = batchContextPackages(contextPackages, extras);
-  log.info({ reviewId, batchCount: batches.length, totalFiles: contextPackages.length }, "Context batched for agents");
+  log.info(
+    {
+      reviewId,
+      batchCount: batches.length,
+      totalFiles: contextPackages.length,
+      hasRepoDocsContext,
+      hasRepoDocsExcerpts,
+    },
+    "Context batched for agents",
+  );
 
   const allFindings: Finding[] = [];
   const allTraces: AgentTrace[] = [];
@@ -1380,6 +1410,7 @@ async function runAgents(
 
     const contextText = batch.map((pkg) => formatContextText(pkg, extras)).join("\n---\n\n");
     const batchLabel = batches.length > 1 ? ` (batch ${batchIdx + 1}/${batches.length})` : "";
+    const repoDocsText = extras?.repoDocs ? `\n\n### Repo Docs\n${extras.repoDocs}\n` : "";
     const prompt = `Review the following code changes and provide your findings.${batchLabel}
 
 **CRITICAL — Line number extraction (MUST FOLLOW):**
@@ -1397,7 +1428,7 @@ Each diff line is prefixed with its line number like this:
 
 Example: If you see "L 123: +db.query(\`SELECT * FROM \${userId}\`)" and find SQL injection:
 → Report: { "file": "...", "line": 123, "lineId": "L123", "lineText": "+db.query(...)", ... }
-
+${repoDocsText}
 ${contextText}`;
 
     type AgentTask = { name: string; promise: Promise<{ findings: Finding[]; trace: AgentTrace }> };
@@ -1408,7 +1439,10 @@ ${contextText}`;
     // Security agent - always runs unless LLM is completely down or skipped
     if (!degradation.slowLlm && !options.skipSecurity) {
       await assertNotCancelled(cancelKey, "Review cancelled");
-      agentTasks.push({ name: "security", promise: runSingleAgentWithTrace("security", reviewId, prompt, repoContext) });
+      agentTasks.push({
+        name: "security",
+        promise: runSingleAgentWithTrace("security", reviewId, prompt, repoContext, { hasRepoDocsContext, hasRepoDocsExcerpts }),
+      });
       runningAgents.push("security");
     } else if (batchIdx === 0) {
       batchTraces.push(buildSkippedTrace("security"));
@@ -1417,7 +1451,10 @@ ${contextText}`;
     // Logic agent - always runs unless LLM is completely down
     if (!degradation.slowLlm) {
       await assertNotCancelled(cancelKey, "Review cancelled");
-      agentTasks.push({ name: "logic", promise: runSingleAgentWithTrace("logic", reviewId, prompt, repoContext) });
+      agentTasks.push({
+        name: "logic",
+        promise: runSingleAgentWithTrace("logic", reviewId, prompt, repoContext, { hasRepoDocsContext, hasRepoDocsExcerpts }),
+      });
       runningAgents.push("logic");
     } else if (batchIdx === 0) {
       batchTraces.push(buildSkippedTrace("logic"));
@@ -1431,7 +1468,10 @@ ${contextText}`;
       if (batchIdx === 0) {
         log.info({ reviewId, hasEmbeddings, agentId: duplicationAgentId }, "Running duplication agent");
       }
-      agentTasks.push({ name: "duplication", promise: runSingleAgentWithTrace(duplicationAgentId, reviewId, prompt, repoContext) });
+      agentTasks.push({
+        name: "duplication",
+        promise: runSingleAgentWithTrace(duplicationAgentId, reviewId, prompt, repoContext, { hasRepoDocsContext, hasRepoDocsExcerpts }),
+      });
       runningAgents.push("duplication");
     } else if (batchIdx === 0) {
       if (options.skipDuplication) {
@@ -1443,7 +1483,10 @@ ${contextText}`;
     // API change agent - benefits from graph but can work without
     if (!degradation.slowLlm && !degradation.noGraph) {
       await assertNotCancelled(cancelKey, "Review cancelled");
-      agentTasks.push({ name: "api-change", promise: runSingleAgentWithTrace("api-change", reviewId, prompt, repoContext) });
+      agentTasks.push({
+        name: "api-change",
+        promise: runSingleAgentWithTrace("api-change", reviewId, prompt, repoContext, { hasRepoDocsContext, hasRepoDocsExcerpts }),
+      });
       runningAgents.push("api-change");
     } else if (batchIdx === 0) {
       if (degradation.noGraph) {
@@ -1455,7 +1498,10 @@ ${contextText}`;
     // Refactor agent - always runs
     if (!degradation.slowLlm) {
       await assertNotCancelled(cancelKey, "Review cancelled");
-      agentTasks.push({ name: "refactor", promise: runSingleAgentWithTrace("refactor", reviewId, prompt, repoContext) });
+      agentTasks.push({
+        name: "refactor",
+        promise: runSingleAgentWithTrace("refactor", reviewId, prompt, repoContext, { hasRepoDocsContext, hasRepoDocsExcerpts }),
+      });
       runningAgents.push("refactor");
     } else if (batchIdx === 0) {
       batchTraces.push(buildSkippedTrace("refactor"));
@@ -1464,7 +1510,10 @@ ${contextText}`;
     // Completeness agent - finds MISSING controls (CSRF, rate limiting, validation)
     if (!degradation.slowLlm) {
       await assertNotCancelled(cancelKey, "Review cancelled");
-      agentTasks.push({ name: "completeness", promise: runSingleAgentWithTrace("completeness", reviewId, prompt, repoContext) });
+      agentTasks.push({
+        name: "completeness",
+        promise: runSingleAgentWithTrace("completeness", reviewId, prompt, repoContext, { hasRepoDocsContext, hasRepoDocsExcerpts }),
+      });
       runningAgents.push("completeness");
     } else if (batchIdx === 0) {
       batchTraces.push(buildSkippedTrace("completeness"));
@@ -1558,6 +1607,7 @@ async function runSingleAgentWithTrace(
   reviewId: string,
   prompt: string,
   repoContext: { repoId: string; repoPath: string },
+  promptContext?: { hasRepoDocsContext: boolean; hasRepoDocsExcerpts: boolean },
 ): Promise<{ findings: Finding[]; trace: AgentTrace }> {
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const agents: Record<string, { generate: (prompt: string) => Promise<any> }> = {
@@ -1577,7 +1627,15 @@ async function runSingleAgentWithTrace(
   }
 
   const startedAt = new Date();
-  log.debug({ reviewId, agent: agentName }, "Running agent");
+  log.info(
+    {
+      reviewId,
+      agent: agentName,
+      docsContextIncluded: promptContext?.hasRepoDocsContext ?? false,
+      docsExcerptsIncluded: promptContext?.hasRepoDocsExcerpts ?? false,
+    },
+    "Running agent with prompt context",
+  );
 
   try {
     const result = await openRouterBreaker.execute(async () => {

@@ -41,6 +41,26 @@ export interface RepoMeta {
   updatedAt?: string;
 }
 
+export interface RepoDocListItem {
+  id: string;
+  repoId: string;
+  title: string;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface RepoDoc extends RepoDocListItem {
+  body: string;
+}
+
+export interface RepoDocSummary {
+  repoId: string;
+  hasDocs: boolean;
+  docCount: number;
+  summaryMarkdown: string;
+  latestUpdatedAt?: string | null;
+}
+
 export interface IndexFramework {
   id: string;
   name: string;
@@ -217,6 +237,54 @@ export interface WSEvent {
   error?: string;
   /** Mastra trace ID for viewing detailed spans */
   mastraTraceId?: string;
+}
+
+// ---------------------------------------------------------------------------
+// Repo Docs APIs
+// ---------------------------------------------------------------------------
+
+export async function getRepoDocs(repoId: string): Promise<{ docs: RepoDocListItem[] }> {
+  const res = await fetch(`${BASE_URL}/api/docs/repos/${encodeURIComponent(repoId)}`);
+  if (!res.ok) throw new Error(`Failed to fetch repo docs: ${res.statusText}`);
+  return res.json();
+}
+
+export async function getRepoDocSummary(repoId: string): Promise<RepoDocSummary> {
+  const res = await fetch(`${BASE_URL}/api/docs/repos/${encodeURIComponent(repoId)}/summary`);
+  if (!res.ok) throw new Error(`Failed to fetch repo docs summary: ${res.statusText}`);
+  return res.json();
+}
+
+export async function getRepoDoc(docId: string): Promise<RepoDoc> {
+  const res = await fetch(`${BASE_URL}/api/docs/${docId}`);
+  if (!res.ok) throw new Error(`Failed to fetch repo doc: ${res.statusText}`);
+  return res.json();
+}
+
+export async function createRepoDoc(input: { repoId: string; title: string; body: string }): Promise<RepoDoc> {
+  const res = await fetch(`${BASE_URL}/api/docs`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(input),
+  });
+  if (!res.ok) throw new Error(`Failed to create repo doc: ${res.statusText}`);
+  return res.json();
+}
+
+export async function updateRepoDoc(docId: string, input: { title: string; body: string }): Promise<RepoDoc> {
+  const res = await fetch(`${BASE_URL}/api/docs/${docId}`, {
+    method: "PUT",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(input),
+  });
+  if (!res.ok) throw new Error(`Failed to update repo doc: ${res.statusText}`);
+  return res.json();
+}
+
+export async function deleteRepoDoc(docId: string): Promise<{ ok: boolean }> {
+  const res = await fetch(`${BASE_URL}/api/docs/${docId}`, { method: "DELETE" });
+  if (!res.ok) throw new Error(`Failed to delete repo doc: ${res.statusText}`);
+  return res.json();
 }
 
 // ---------------------------------------------------------------------------

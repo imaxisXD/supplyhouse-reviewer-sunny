@@ -1,7 +1,8 @@
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState, type CSSProperties } from "react";
 import { Link, useNavigate } from "react-router-dom";
-import { getReviewsList, submitReview, validateToken } from "../api/client";
-import type { ReviewListItem, TokenValidationResult } from "../api/client";
+import ReactMarkdown from "react-markdown";
+import { getRepoDocSummary, getReviewsList, submitReview, validateToken } from "../api/client";
+import type { RepoDocSummary, ReviewListItem, TokenValidationResult } from "../api/client";
 import { useJourney, journeySteps, getJourneyStatus } from "../journey";
 
 const panelClass =
@@ -53,15 +54,75 @@ export default function Home() {
   const [tokenValid, setTokenValid] = useState(false);
   const [validationResult, setValidationResult] = useState<TokenValidationResult | null>(null);
   const [showHelp, setShowHelp] = useState(false);
+  const [repoDocSummary, setRepoDocSummary] = useState<RepoDocSummary | null>(null);
+  const [repoDocLoading, setRepoDocLoading] = useState(false);
+  const [repoDocError, setRepoDocError] = useState("");
 
   const prUrlPattern = /^https?:\/\/bitbucket\.org\/[\w.-]+\/[\w.-]+\/pull-requests\/\d+/;
   const prUrlValid = prUrlPattern.test(prUrl);
+
+  const repoIdFromPrUrl = useMemo(() => {
+    return (value: string): string | null => {
+      try {
+        const url = new URL(value);
+        const parts = url.pathname.split("/").filter(Boolean);
+        if (parts.length >= 2) {
+          return `${parts[0]}/${parts[1]}`;
+        }
+      } catch {
+        // ignore
+      }
+      return null;
+    };
+  }, []);
 
   // Reset validation when inputs change
   useEffect(() => {
     setTokenValid(false);
     setValidationResult(null);
   }, [prUrl, email, token]);
+
+  useEffect(() => {
+    if (!prUrlValid) {
+      setRepoDocSummary(null);
+      setRepoDocError("");
+      setRepoDocLoading(false);
+      return;
+    }
+
+    const repoId = repoIdFromPrUrl(prUrl);
+    if (!repoId) {
+      setRepoDocSummary(null);
+      setRepoDocError("");
+      return;
+    }
+
+    setRepoDocSummary(null);
+    setRepoDocLoading(true);
+    let active = true;
+    const timer = setTimeout(() => {
+      setRepoDocError("");
+      getRepoDocSummary(repoId)
+        .then((summary) => {
+          if (!active) return;
+          setRepoDocSummary(summary);
+        })
+        .catch((err) => {
+          if (!active) return;
+          setRepoDocSummary(null);
+          setRepoDocError(err instanceof Error ? err.message : "Failed to load repo docs");
+        })
+        .finally(() => {
+          if (!active) return;
+          setRepoDocLoading(false);
+        });
+    }, 350);
+
+    return () => {
+      active = false;
+      clearTimeout(timer);
+    };
+  }, [prUrlValid, prUrl, repoIdFromPrUrl]);
 
   useEffect(() => {
     setRecentLoading(true);
@@ -148,6 +209,11 @@ export default function Home() {
   const isFirstRun = !journeyLoading && !recentLoading && recent.length === 0 && currentStep === "submit";
 
   const activeStep = journeySteps.find((step) => step.id === currentStep);
+  const repoIdForDocs = prUrlValid ? repoIdFromPrUrl(prUrl) : null;
+  const dossierPatternStyle: CSSProperties = {
+    backgroundImage:
+      "repeating-linear-gradient(135deg, rgba(30,41,59,0.08) 0, rgba(30,41,59,0.08) 1px, transparent 1px, transparent 7px)",
+  };
 
   return (
     <div className="space-y-6">
@@ -261,6 +327,102 @@ export default function Home() {
                     </svg>
                   </span>
                 )}
+              </div>
+            </div>
+
+            {/* ── Repository Docs ── */}
+            <div className={`border border-t-0 border-ink-900 p-4 ${!prUrlValid ? "opacity-60" : ""}`}>
+              <div className="flex items-center gap-3">
+                <span className="flex h-7 w-7 items-center justify-center border border-ink-900 bg-warm-50 text-[9px] font-semibold uppercase tracking-[0.3em] text-ink-700">
+                  Docs
+                </span>
+                <span className={stepTitleClass(prUrlValid)}>Repository Docs</span>
+                {repoDocLoading ? (
+                  <span className="inline-flex items-center gap-1 border border-ink-900/40 bg-white/70 px-2 py-0.5 text-[10px] font-semibold uppercase tracking-[0.2em] text-ink-700">
+                    Checking
+                  </span>
+                ) : repoDocSummary?.hasDocs ? (
+                  <span className="inline-flex items-center gap-1 border border-emerald-500/40 bg-emerald-500/10 px-2 py-0.5 text-[10px] font-semibold uppercase tracking-[0.2em] text-emerald-700">
+                    Available
+                  </span>
+                ) : repoDocError ? (
+                  <span className="inline-flex items-center gap-1 border border-rose-500/40 bg-rose-500/10 px-2 py-0.5 text-[10px] font-semibold uppercase tracking-[0.2em] text-rose-700">
+                    Error
+                  </span>
+                ) : prUrlValid ? (
+                  <span className="inline-flex items-center gap-1 border border-amber-500/40 bg-amber-500/10 px-2 py-0.5 text-[10px] font-semibold uppercase tracking-[0.2em] text-amber-700">
+                    Not found
+                  </span>
+                ) : null}
+              </div>
+              <p className="mt-2 ml-10 text-xs text-ink-600">
+                Repo-specific rules and conventions that will be injected into the review agents.
+              </p>
+
+              <div className="mt-3 ml-10 relative border border-ink-900/70 bg-warm-50/80 p-4 overflow-hidden">
+                <div className="absolute inset-0 pointer-events-none opacity-50" style={dossierPatternStyle} />
+                <div className="absolute inset-y-0 left-0 w-1 bg-brand-500/80" />
+                <div className="relative space-y-3">
+                  {repoDocLoading && (
+                    <div className="text-xs text-ink-500">Checking repo docs…</div>
+                  )}
+
+                  {repoDocError && (
+                    <div className="text-xs text-rose-700">
+                      {repoDocError}
+                    </div>
+                  )}
+
+                  {!repoDocLoading && !repoDocError && repoDocSummary?.hasDocs && (
+                    <>
+                      <div className="flex flex-wrap items-center gap-3 text-[10px] uppercase tracking-[0.3em] text-ink-600">
+                        <span>{repoDocSummary.docCount} docs</span>
+                        {repoDocSummary.latestUpdatedAt && (
+                          <span>Updated {repoDocSummary.latestUpdatedAt}</span>
+                        )}
+                      </div>
+                      <div className="max-h-40 overflow-y-auto pr-2 border border-ink-900/20 bg-white/60 p-3">
+                        <ReactMarkdown
+                          components={{
+                            h3: ({ children }) => (
+                              <h3 className="text-[10px] font-semibold uppercase tracking-[0.3em] text-ink-700 mt-2 mb-1">
+                                {children}
+                              </h3>
+                            ),
+                            p: ({ children }) => <p className="text-xs text-ink-700 mb-2">{children}</p>,
+                            em: ({ children }) => <em className="text-ink-600">{children}</em>,
+                            ul: ({ children }) => <ul className="list-disc ml-4 text-xs text-ink-700 space-y-1">{children}</ul>,
+                            li: ({ children }) => <li>{children}</li>,
+                          }}
+                        >
+                          {repoDocSummary.summaryMarkdown}
+                        </ReactMarkdown>
+                      </div>
+                      {repoIdForDocs && (
+                        <Link
+                          to={`/repo/${encodeURIComponent(repoIdForDocs)}/docs`}
+                          className="text-xs text-brand-600 hover:underline"
+                        >
+                          Open full docs →
+                        </Link>
+                      )}
+                    </>
+                  )}
+
+                  {!repoDocLoading && !repoDocError && !repoDocSummary?.hasDocs && prUrlValid && (
+                    <div className="text-xs text-ink-600">
+                      No docs found for this repo yet.
+                      {repoIdForDocs && (
+                        <Link
+                          to={`/repo/${encodeURIComponent(repoIdForDocs)}/docs`}
+                          className="ml-2 text-brand-600 hover:underline"
+                        >
+                          Create docs →
+                        </Link>
+                      )}
+                    </div>
+                  )}
+                </div>
               </div>
             </div>
 

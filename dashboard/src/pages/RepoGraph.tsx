@@ -854,6 +854,12 @@ export default function RepoGraph() {
         >
           {reindexIsRunning ? "Re-indexing…" : "Force Re-index"}
         </button>
+        <Link
+          to={`/repo/${encodeURIComponent(decodedRepoId)}/docs`}
+          className="inline-flex items-center gap-2 border border-ink-900 bg-white px-3 py-1.5 text-[10px] font-semibold uppercase tracking-[0.3em] text-ink-700 transition hover:bg-warm-100"
+        >
+          Docs
+        </Link>
         <div className="flex items-center gap-3">
           <Link
             to="/repos"
