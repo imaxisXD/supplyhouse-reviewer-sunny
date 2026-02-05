@@ -32,7 +32,16 @@
       "Bash(git checkout:*)",
       "Bash(grep:*)",
       "Bash(find . -name \"*.ts\" -type f -exec grep -l \"low.*priority\\\\|brief.*comma\\\\|magic.*numbers\" {} ;)",
-      "Bash(xxd:*)"
+      "Bash(xxd:*)",
+      "Bash(find . -type f -name \"*.ts\" -path \"*/src/*\" -exec grep -l \"queryCallers\\\\|queryCallees\\\\|queryImports\\\\|queryImpact\\\\|traceCrossFile\\\\|findEntryPoints\" {} ;)",
+      "Bash(find:*)",
+      "WebFetch(domain:r3f.docs.pmnd.rs)",
+      "Bash(node -e:*)",
+      "Bash(sqlite3:*)",
+      "Bash(npx vite build)",
+      "Bash(git -C \"/Users/abhishekmac/Desktop/Hobby Projects/supplyhouse-reviewer-sunny/dashboard\" log --oneline -10)",
+      "WebFetch(domain:www.deepgraph.co)",
+      "WebFetch(domain:www.anthropic.com)"
     ]
   }
 }

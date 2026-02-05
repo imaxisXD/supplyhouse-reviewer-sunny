@@ -211,7 +211,7 @@ export const graphRoutes = new Elysia({ prefix: "/api/graph" })
         };
       });
 
-      // Fetch all edges for this repo
+      // Fetch all edges for this repo (include line + symbols for detail panel)
       const edgeRecords = await runCypher(
         `MATCH (a)-[r]->(b)
          WHERE a.repoId = $repoId
@@ -219,17 +219,24 @@ export const graphRoutes = new Elysia({ prefix: "/api/graph" })
            AND type(r) IN $edgeTypes
            AND ANY(lbl IN labels(a) WHERE lbl IN $nodeTypes)
            AND ANY(lbl IN labels(b) WHERE lbl IN $nodeTypes)
-         RETURN id(a) AS source, id(b) AS target, type(r) AS relType`,
+         RETURN id(a) AS source, id(b) AS target, type(r) AS relType,
+                r.line AS line, r.symbols AS symbols`,
         { repoId, edgeTypes, nodeTypes },
       );
 
       const nodeIdSet = new Set(nodes.map((n) => n.id));
       const links = edgeRecords
-        .map((r) => ({
-          source: String(r.get("source") as number),
-          target: String(r.get("target") as number),
-          type: r.get("relType") as string,
-        }))
+        .map((r) => {
+          const line = r.get("line");
+          const symbols = r.get("symbols");
+          return {
+            source: String(r.get("source") as number),
+            target: String(r.get("target") as number),
+            type: r.get("relType") as string,
+            line: line != null ? Number(line) : undefined,
+            symbols: Array.isArray(symbols) ? (symbols as string[]) : undefined,
+          };
+        })
         .filter((l) => nodeIdSet.has(l.source) && nodeIdSet.has(l.target));
 
       log.info(

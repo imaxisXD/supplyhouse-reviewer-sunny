@@ -1,5 +1,5 @@
 import type { ReviewJob, ReviewStatus, ReviewPhase } from "../types/review.ts";
-import type { Finding, ReviewResult, Severity, Category, AgentTrace } from "../types/findings.ts";
+import type { Finding, ReviewResult, Severity, Category, AgentTrace, ToolUsageSummary } from "../types/findings.ts";
 import type { ContextPackage } from "./context-builder.ts";
 import type { DiffFile, PRDetails } from "../types/bitbucket.ts";
 import type { Logger } from "pino";
@@ -685,8 +685,11 @@ export async function executeReview(job: ReviewJob, sessionLogger?: Logger): Pro
     );
 
     let plannerOutput: PlannerOutput | null = null;
+    const auxiliaryTraces: AgentTrace[] = [];
     if (!degradation.slowLlm) {
-      plannerOutput = await runPlannerAgent(reviewId, diffFiles, diffIndex, prDomainFactsText);
+      const plannerResult = await runPlannerAgent(reviewId, diffFiles, diffIndex, prDomainFactsText);
+      plannerOutput = plannerResult.output;
+      auxiliaryTraces.push(plannerResult.trace);
     }
     const plannerNotes = formatPlannerNotes(plannerOutput);
     const combinedPlannerNotes = [
@@ -836,6 +839,7 @@ export async function executeReview(job: ReviewJob, sessionLogger?: Logger): Pro
         verifiedFindings = verificationResult.verifiedFindings;
         disprovenFindings = verificationResult.disprovenFindings;
         disprovenCount = verificationResult.disprovenCount;
+        auxiliaryTraces.push(...verificationResult.traces);
         const verificationDurationMs = Date.now() - verificationStart;
         log.info(
           {
@@ -907,10 +911,12 @@ export async function executeReview(job: ReviewJob, sessionLogger?: Logger): Pro
     }));
     const synthesisStart = Date.now();
     log.info({ reviewId, findings: verifiedFindings.length }, "Synthesis started");
-    const synthesis = await synthesizeFindings(
+    const synthesisResult = await synthesizeFindings(
       reviewId, verifiedFindings, degradation,
       prDetails?.title, prDetails?.description, diffFilesMeta,
     );
+    const { trace: synthesisTrace, ...synthesis } = synthesisResult;
+    if (synthesisTrace) auxiliaryTraces.push(synthesisTrace);
     const synthesisDurationMs = Date.now() - synthesisStart;
     log.info(
       {
@@ -923,6 +929,9 @@ export async function executeReview(job: ReviewJob, sessionLogger?: Logger): Pro
     );
     await assertNotCancelled(cancelKey, "Review cancelled");
     const findings = synthesis.findings.length > 0 ? synthesis.findings : verifiedFindings;
+
+    // Merge auxiliary traces (planner, verification, synthesis) into the main traces array
+    traces.push(...auxiliaryTraces);
 
     const durationMs = Date.now() - startTime;
     const totalCostUsd = traces.reduce((sum, t) => sum + t.costUsd, 0);
@@ -998,6 +1007,9 @@ export async function executeReview(job: ReviewJob, sessionLogger?: Logger): Pro
 
     await redis.set(`review:result:${reviewId}`, JSON.stringify(result));
     await updateStatus(reviewId, "complete", 100, findings);
+
+    // Fire-and-forget: re-verify costs from OpenRouter after a short delay
+    void verifyCostsInBackground(reviewId, traces);
 
     await publish(`review:events:${reviewId}`, {
       type: "REVIEW_COMPLETE",
@@ -1161,7 +1173,8 @@ async function runPlannerAgent(
   diffFiles: DiffFile[],
   diffIndex: ReturnType<typeof buildDiffIndex>,
   prDomainFactsText?: string,
-): Promise<PlannerOutput | null> {
+): Promise<{ output: PlannerOutput | null; trace: AgentTrace }> {
+  const startedAt = new Date();
   const fileLines = diffFiles.map((f) =>
     `- ${f.path} (${f.status}, +${f.additions}/-${f.deletions}${f.oldPath ? `, renamed from ${f.oldPath}` : ""})`,
   );
@@ -1189,15 +1202,43 @@ async function runPlannerAgent(
   ].join("\n");
 
   try {
-    const result = await openRouterBreaker.execute(async () => plannerAgent.generate(prompt));
+    const result = await openRouterBreaker.execute(async () => plannerAgent.generate(prompt, { tracingOptions: { metadata: { reviewId } } }));
+    const completedAt = new Date();
     const text = typeof result.text === "string" ? result.text : "";
-    return parsePlannerOutput(text);
+    const usage = extractUsageFromResult(result);
+    return {
+      output: parsePlannerOutput(text),
+      trace: {
+        agent: "planner",
+        startedAt: startedAt.toISOString(),
+        completedAt: completedAt.toISOString(),
+        durationMs: completedAt.getTime() - startedAt.getTime(),
+        ...usage,
+        findingsCount: 0,
+        status: "success",
+      },
+    };
   } catch (error) {
+    const completedAt = new Date();
     log.warn(
       { reviewId, error: error instanceof Error ? error.message : String(error) },
       "Planner agent failed; continuing without planner notes",
     );
-    return null;
+    return {
+      output: null,
+      trace: {
+        agent: "planner",
+        startedAt: startedAt.toISOString(),
+        completedAt: completedAt.toISOString(),
+        durationMs: completedAt.getTime() - startedAt.getTime(),
+        inputTokens: 0,
+        outputTokens: 0,
+        costUsd: 0,
+        findingsCount: 0,
+        status: "failed",
+        error: error instanceof Error ? error.message : String(error),
+      },
+    };
   }
 }
 
@@ -1584,6 +1625,60 @@ ${contextText}`;
   return { findings: allFindings, traces: allTraces };
 }
 
+/**
+ * Extract usage metrics (tokens, cost, generationId) from an agent result.
+ * Shared by all agent call sites to avoid duplicating cost-extraction logic.
+ */
+function extractUsageFromResult(
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  result: any,
+): { inputTokens: number; outputTokens: number; costUsd: number; generationId?: string } {
+  const usage = (result as Record<string, unknown>).usage as Record<string, unknown> | undefined;
+  const inputTokens = typeof usage?.promptTokens === "number" ? usage.promptTokens : 0;
+  const outputTokens = typeof usage?.completionTokens === "number" ? usage.completionTokens : 0;
+  const directCost = typeof usage?.cost === "number" ? usage.cost : null;
+  const generationId = result.response?.id;
+  return {
+    inputTokens,
+    outputTokens,
+    costUsd: directCost ?? 0,
+    generationId: generationId || undefined,
+  };
+}
+
+/**
+ * Extract tool usage from agent execution steps.
+ * The AI SDK result exposes `steps`, each with `toolCalls` arrays.
+ * Defensively checks both direct properties and payload wrappers
+ * to handle AI SDK vs Mastra wrapping differences.
+ */
+function extractToolUsageFromResult(
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  result: any,
+): ToolUsageSummary {
+  const byTool: Record<string, number> = {};
+  let totalCalls = 0;
+
+  const steps = result?.steps;
+  if (!Array.isArray(steps)) {
+    return { totalCalls: 0, byTool };
+  }
+
+  for (const step of steps) {
+    const toolCalls = step?.toolCalls;
+    if (!Array.isArray(toolCalls)) continue;
+
+    for (const call of toolCalls) {
+      // AI SDK uses call.toolName; Mastra chunk wrapper uses call.payload.toolName
+      const toolName: string = call?.toolName ?? call?.payload?.toolName ?? "unknown";
+      byTool[toolName] = (byTool[toolName] ?? 0) + 1;
+      totalCalls++;
+    }
+  }
+
+  return { totalCalls, byTool };
+}
+
 function buildSkippedTrace(agent: string): AgentTrace {
   const now = new Date().toISOString();
   return {
@@ -1610,7 +1705,7 @@ async function runSingleAgentWithTrace(
   promptContext?: { hasRepoDocsContext: boolean; hasRepoDocsExcerpts: boolean },
 ): Promise<{ findings: Finding[]; trace: AgentTrace }> {
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  const agents: Record<string, { generate: (prompt: string) => Promise<any> }> = {
+  const agents: Record<string, { generate: (prompt: string, options?: any) => Promise<any> }> = {
     "security": securityAgent,
     "logic": logicAgent,
     "duplication": duplicationAgent,
@@ -1639,28 +1734,30 @@ async function runSingleAgentWithTrace(
 
   try {
     const result = await openRouterBreaker.execute(async () => {
-      return runWithRepoContext(repoContext, () => agent.generate(prompt));
+      return runWithRepoContext(repoContext, () => agent.generate(prompt, { tracingOptions: { metadata: { reviewId } } }));
     });
 
     const completedAt = new Date();
     const text = typeof result.text === "string" ? result.text : "";
-    const findings = parseFindingsFromResponse(text, agentName);
+    const allFindings = parseFindingsFromResponse(text, agentName);
+    const usage = extractUsageFromResult(result);
+    const toolUsage = extractToolUsageFromResult(result);
 
-    // Extract usage data from response
-    const usage = (result as Record<string, unknown>).usage as Record<string, unknown> | undefined;
-    const inputTokens = typeof usage?.promptTokens === "number" ? usage.promptTokens : 0;
-    const outputTokens = typeof usage?.completionTokens === "number" ? usage.completionTokens : 0;
+    // Confidence gate: drop low-confidence findings that lack investigation trail
+    const findings = allFindings.filter(f => {
+      if (f.confidence < 0.7 && !f.investigation) {
+        log.warn(
+          { reviewId, agent: agentName, title: f.title, confidence: f.confidence },
+          "Dropping low-confidence finding without investigation trail",
+        );
+        return false;
+      }
+      return true;
+    });
 
-    // Try to get cost directly from usage object (OpenRouter includes this in responses)
-    // Fall back to generation endpoint if not available
-    const directCost = typeof usage?.cost === "number" ? usage.cost : null;
-    const generationId = result.response?.id;
-    const costUsd = directCost ?? (generationId ? (await fetchOpenRouterCostUsd(generationId)) ?? 0 : 0);
-
-    // Debug log to verify cost retrieval method
-    log.debug(
-      { reviewId, agent: agentName, directCost, generationId, costUsd },
-      "Agent cost tracking",
+    log.info(
+      { reviewId, agent: agentName, toolsUsed: toolUsage.totalCalls, byTool: toolUsage.byTool, ...usage },
+      "Agent execution complete",
     );
 
     return {
@@ -1670,11 +1767,10 @@ async function runSingleAgentWithTrace(
         startedAt: startedAt.toISOString(),
         completedAt: completedAt.toISOString(),
         durationMs: completedAt.getTime() - startedAt.getTime(),
-        inputTokens,
-        outputTokens,
-        costUsd,
+        ...usage,
         findingsCount: findings.length,
         status: "success",
+        toolUsage,
       },
     };
   } catch (error) {
@@ -1769,6 +1865,23 @@ function parseFindingsFromResponse(text: string, agentName: string): Finding[] {
         ? (rawCategory as Category)
         : (AGENT_DEFAULT_CATEGORY[agentName] ?? "bug");
 
+      // Extract optional investigation trail
+      const rawInvestigation = f.investigation as Record<string, unknown> | undefined;
+      const investigation = rawInvestigation
+        ? {
+            toolsUsed: Array.isArray(rawInvestigation.toolsUsed)
+              ? (rawInvestigation.toolsUsed as unknown[]).filter((v): v is string => typeof v === "string")
+              : [],
+            filesChecked: Array.isArray(rawInvestigation.filesChecked)
+              ? (rawInvestigation.filesChecked as unknown[]).filter((v): v is string => typeof v === "string")
+              : [],
+            patternsSearched: Array.isArray(rawInvestigation.patternsSearched)
+              ? (rawInvestigation.patternsSearched as unknown[]).filter((v): v is string => typeof v === "string")
+              : [],
+            conclusion: typeof rawInvestigation.conclusion === "string" ? rawInvestigation.conclusion : "",
+          }
+        : undefined;
+
       findings.push({
         file: String(f.file ?? ""),
         line,
@@ -1798,6 +1911,7 @@ function parseFindingsFromResponse(text: string, agentName: string): Finding[] {
                 usage: String(a.usage ?? ""),
               }))
           : undefined,
+        investigation,
       });
     }
 
@@ -1848,6 +1962,7 @@ interface VerificationResult {
   verifiedFindings: Finding[];
   disprovenFindings: Finding[];
   disprovenCount: number;
+  traces: AgentTrace[];
 }
 
 /**
@@ -1871,10 +1986,13 @@ async function runVerificationPhase(
 
   const verifiedFindings: Finding[] = [];
   const disprovenFindings: Finding[] = [];
+  const batchTraces: AgentTrace[] = [];
   let disprovenCount = 0;
 
-  for (const batch of batches) {
+  for (let batchIdx = 0; batchIdx < batches.length; batchIdx++) {
+    const batch = batches[batchIdx]!;
     await assertNotCancelled(cancelKey, "Review cancelled");
+    const startedAt = new Date();
 
     const prompt = `
 You are verifying the following findings from a code review.
@@ -1916,26 +2034,52 @@ Return format:
 
     try {
       const result = await openRouterBreaker.execute(async () => {
-        return runWithRepoContext(repoContext, () => verificationAgent.generate(prompt));
+        return runWithRepoContext(repoContext, () => verificationAgent.generate(prompt, { tracingOptions: { metadata: { reviewId } } }));
       });
+      const completedAt = new Date();
 
       const text = typeof result.text === "string" ? result.text : "";
       const parsed = parseVerificationResponse(text, batch);
+      const usage = extractUsageFromResult(result);
 
       verifiedFindings.push(...parsed.verified);
       disprovenFindings.push(...parsed.disproven);
       disprovenCount += parsed.disprovenCount;
+
+      batchTraces.push({
+        agent: batches.length > 1 ? `verification-${batchIdx + 1}` : "verification",
+        startedAt: startedAt.toISOString(),
+        completedAt: completedAt.toISOString(),
+        durationMs: completedAt.getTime() - startedAt.getTime(),
+        ...usage,
+        findingsCount: parsed.verified.length + parsed.disproven.length,
+        status: "success",
+      });
     } catch (error) {
+      const completedAt = new Date();
       log.warn(
         { reviewId, error: error instanceof Error ? error.message : String(error) },
         "Verification batch failed, keeping original findings",
       );
       // If verification fails, keep original findings
       verifiedFindings.push(...batch);
+
+      batchTraces.push({
+        agent: batches.length > 1 ? `verification-${batchIdx + 1}` : "verification",
+        startedAt: startedAt.toISOString(),
+        completedAt: completedAt.toISOString(),
+        durationMs: completedAt.getTime() - startedAt.getTime(),
+        inputTokens: 0,
+        outputTokens: 0,
+        costUsd: 0,
+        findingsCount: 0,
+        status: "failed",
+        error: error instanceof Error ? error.message : String(error),
+      });
     }
   }
 
-  return { verifiedFindings, disprovenFindings, disprovenCount };
+  return { verifiedFindings, disprovenFindings, disprovenCount, traces: batchTraces };
 }
 
 /**
@@ -2049,7 +2193,7 @@ async function synthesizeFindings(
   prTitle?: string,
   prDescription?: string,
   diffFilesMeta?: { path: string; status: string; additions: number; deletions: number }[],
-): Promise<SynthesisOutput> {
+): Promise<SynthesisOutput & { trace?: AgentTrace }> {
   if (findings.length === 0) return { findings: [], confidenceScore: 5 };
 
   // If LLM is degraded, skip synthesis and return raw findings
@@ -2058,6 +2202,7 @@ async function synthesizeFindings(
     return { findings };
   }
 
+  const startedAt = new Date();
   try {
     const promptParts: string[] = [];
 
@@ -2085,17 +2230,44 @@ async function synthesizeFindings(
     const prompt = promptParts.join("\n");
 
     const result = await openRouterBreaker.execute(async () => {
-      const response = await synthesisAgent.generate(prompt);
+      const response = await synthesisAgent.generate(prompt, { tracingOptions: { metadata: { reviewId } } });
       return response;
     });
+    const completedAt = new Date();
+    const usage = extractUsageFromResult(result);
+
+    const trace: AgentTrace = {
+      agent: "synthesis",
+      startedAt: startedAt.toISOString(),
+      completedAt: completedAt.toISOString(),
+      durationMs: completedAt.getTime() - startedAt.getTime(),
+      ...usage,
+      findingsCount: 0,
+      status: "success",
+    };
 
     const text = typeof result.text === "string" ? result.text : "";
     const synthesized = parseSynthesisOutput(text);
-    if (synthesized && synthesized.findings.length > 0) return synthesized;
-    return { findings };
+    if (synthesized && synthesized.findings.length > 0) return { ...synthesized, trace };
+    return { findings, trace };
   } catch (error) {
+    const completedAt = new Date();
     log.warn({ reviewId, error }, "Synthesis failed, returning raw findings");
-    return { findings };
+    return {
+      findings,
+      trace: {
+        agent: "synthesis",
+        startedAt: startedAt.toISOString(),
+        completedAt: completedAt.toISOString(),
+        durationMs: completedAt.getTime() - startedAt.getTime(),
+        inputTokens: 0,
+        outputTokens: 0,
+        costUsd: 0,
+        findingsCount: 0,
+        status: "failed",
+        error: error instanceof Error ? error.message : String(error),
+      },
+    };
   }
 }
 
@@ -2178,6 +2350,62 @@ function parseSynthesisOutput(text: string): SynthesisOutput | null {
   } catch (error) {
     log.warn({ error }, "Failed to parse synthesis output");
     return null;
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Background cost verification
+// ---------------------------------------------------------------------------
+
+/**
+ * Fire-and-forget: re-fetches costs from OpenRouter for all traces with a
+ * generationId and updates the stored review result in Redis if any cost changed.
+ */
+async function verifyCostsInBackground(reviewId: string, traces: AgentTrace[]): Promise<void> {
+  try {
+    // Wait for OpenRouter to index generation stats
+    await Bun.sleep(3000);
+
+    const tracesWithGenId = traces.filter((t) => t.generationId);
+    if (tracesWithGenId.length === 0) return;
+
+    let anyChanged = false;
+    for (const trace of tracesWithGenId) {
+      const freshCost = await fetchOpenRouterCostUsd(trace.generationId!);
+      if (freshCost !== null && freshCost !== trace.costUsd) {
+        log.info(
+          { reviewId, agent: trace.agent, oldCost: trace.costUsd, newCost: freshCost },
+          "Cost updated from OpenRouter verification",
+        );
+        trace.costUsd = freshCost;
+        anyChanged = true;
+      }
+    }
+
+    if (!anyChanged) return;
+
+    // Re-read stored result, apply updated trace costs, and re-save
+    const raw = await redis.get(`review:result:${reviewId}`);
+    if (!raw) return;
+    const result = JSON.parse(raw) as ReviewResult;
+
+    for (const updatedTrace of tracesWithGenId) {
+      const stored = result.traces?.find(
+        (t) => t.agent === updatedTrace.agent && t.generationId === updatedTrace.generationId,
+      );
+      if (stored) stored.costUsd = updatedTrace.costUsd;
+    }
+
+    const newTotalCost = (result.traces ?? []).reduce((sum, t) => sum + t.costUsd, 0);
+    result.summary.costUsd = newTotalCost;
+
+    await redis.set(`review:result:${reviewId}`, JSON.stringify(result));
+    log.info({ reviewId, newTotalCost }, "Review cost verified and updated from OpenRouter");
+  } catch (error) {
+    log.warn(
+      { reviewId, error: error instanceof Error ? error.message : String(error) },
+      "Background cost verification failed (non-fatal)",
+    );
   }
 }
 

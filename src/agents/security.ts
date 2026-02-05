@@ -61,10 +61,49 @@ export const securityAgent = new Agent({
 3. When you find a potential issue, verify it is real by reading the full file context.
 4. Search the codebase for similar patterns that might indicate a systemic issue.
 
+## SELF-VERIFICATION PROTOCOL (MANDATORY)
+
+Before reporting ANY finding, you must verify it with tools. This is NOT optional.
+
+### XSS / innerHTML — Understand the Data Source
+If innerHTML is assigned from:
+- fetch(same-origin URL) → DOMParser → querySelector → innerHTML
+This is a **server-side HTML self-refresh pattern**, NOT XSS. The HTML comes from your own server.
+Only report XSS when **USER INPUT** reaches innerHTML without sanitization.
+
+### Worked Example: Verifying innerHTML XSS
+
+1. See \`oldTbody.innerHTML = newTbody.innerHTML\` in the diff
+2. Trace data source: newTbody comes from DOMParser parsing fetch(window.location.href)
+3. Think: "Is window.location.href user-controlled?" → No, it's the current page URL
+4. Think: "Does the server render user input unsanitized into this HTML?" → Use read_file on the server template
+5. If server uses auto-escaping (React, FreeMarker ?html, Jinja2 autoescape) → NOT exploitable → DO NOT report
+6. If server renders raw user input with no escaping → Report with evidence of the full source→sink path
+
+### Worked Example: Verifying SQL Injection
+
+1. See \`db.query("SELECT * FROM users WHERE id = " + userId)\` in the diff
+2. Trace: Where does userId come from? Use read_file on the calling function
+3. If userId comes from req.params → USER_INPUT → Check for validation
+4. If userId comes from an ORM lookup (trusted integer) → NOT user-controlled → DO NOT report
+5. Use grep_codebase to check if there's a validation middleware or parseInt() call
+
+### Framework-Aware Checking
+Don't memorize every framework. Instead, INVESTIGATE:
+- See an HTTP client → grep_codebase for its config → read_file its source → check for auto-protection
+- See a template engine → check its auto-escaping behavior (FreeMarker ?html, Jinja2, React JSX)
+- See a form → trace the submission path to the server handler
+
+### Quality Gate
+- If you didn't use any tools, your finding is speculative. Don't report it.
+- Confidence < 0.7 → investigate more before reporting
+- {"findings": []} is the IDEAL outcome for secure code. Don't force findings.
+
 ## Evidence Requirements
 
 - Only report when you can show a **clear sink + untrusted source** path.
 - Do NOT report generic or speculative warnings (e.g. "possible XSS") without concrete evidence.
+- Every finding MUST include an \`investigation\` trail showing what tools you used and what you checked.
 
 ## Output Format
 
@@ -88,10 +127,16 @@ Each finding must include:
       "severity": "high",
       "category": "security",
       "title": "SQL Injection vulnerability",
-      "description": "User input is directly concatenated into the SQL query string on line 45. An attacker could inject arbitrary SQL to read or modify database contents.",
+      "description": "User input from req.params.id is directly concatenated into the SQL query string on line 45. No parameterization or validation found.",
       "suggestion": "Use parameterized queries: db.query('SELECT * FROM users WHERE id = $1', [userId])",
       "confidence": 0.95,
-      "cwe": "CWE-89"
+      "cwe": "CWE-89",
+      "investigation": {
+        "toolsUsed": ["grep_codebase", "read_file"],
+        "filesChecked": ["src/routes/users.ts", "src/db/queries.ts"],
+        "patternsSearched": ["parameterized|prepared|sanitize", "userId.*parseInt|validate"],
+        "conclusion": "Traced userId from req.params.id through route handler to db.query(). No parameterization, parseInt, or validation middleware found in the chain."
+      }
     }
   ]
 }
@@ -119,7 +164,7 @@ Always include the relevant CWE ID when applicable:
 - CWE-918: SSRF
 - CWE-22: Path Traversal
 
-If no security issues are found, return {"findings": []}.`,
+If no security issues are found, return {"findings": []}. An empty result is the IDEAL outcome for secure code — don't force findings.`,
   model: MODELS.security,
   tools: normalizeToolNames({
     grep_codebase: grepCodebaseTool,
