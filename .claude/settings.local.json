@@ -30,7 +30,8 @@
       "Bash(npm search:*)",
       "Bash(git fetch:*)",
       "Bash(git checkout:*)",
-      "Bash(grep:*)"
+      "Bash(grep:*)",
+      "Bash(find src -name \"*.ts\" -exec grep -l \"summaryComment\" {} ;)"
     ]
   }
 }
