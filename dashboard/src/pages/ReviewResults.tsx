@@ -1,7 +1,7 @@
 import { useEffect, useState } from "react";
-import { useParams } from "react-router-dom";
-import { getReviewResult } from "../api/client";
-import type { ReviewResult } from "../api/client";
+import { useParams, useNavigate } from "react-router-dom";
+import { getReviewResult, submitReview, validateToken } from "../api/client";
+import type { ReviewResult, TokenValidationResult } from "../api/client";
 import FindingsTable from "../components/FindingsTable";
 import { advanceJourneyStep } from "../journey";
 
@@ -54,8 +54,67 @@ const STATUS_TEXT_COLORS: Record<string, string> = {
 
 export default function ReviewResults() {
   const { id } = useParams<{ id: string }>();
+  const navigate = useNavigate();
   const [result, setResult] = useState<ReviewResult | null>(null);
   const [error, setError] = useState("");
+
+  // Re-review modal state
+  const [reReviewOpen, setReReviewOpen] = useState(false);
+  const [email, setEmail] = useState("");
+  const [token, setToken] = useState("");
+  const [validating, setValidating] = useState(false);
+  const [tokenValid, setTokenValid] = useState(false);
+  const [validationResult, setValidationResult] = useState<TokenValidationResult | null>(null);
+  const [submitting, setSubmitting] = useState(false);
+  const [reReviewError, setReReviewError] = useState("");
+
+  const buildFullToken = () => `${email}:${token}`;
+
+  const handleValidate = async () => {
+    if (!result?.prUrl || !email || !token) return;
+    setValidating(true);
+    setReReviewError("");
+    setTokenValid(false);
+    setValidationResult(null);
+    try {
+      const res = await validateToken(result.prUrl, buildFullToken());
+      setValidationResult(res);
+      setTokenValid(res.valid);
+      if (!res.valid && res.error) {
+        setReReviewError(res.error);
+      }
+    } catch (err) {
+      setReReviewError(err instanceof Error ? err.message : "Validation failed");
+    } finally {
+      setValidating(false);
+    }
+  };
+
+  const handleReReview = async () => {
+    if (!result?.prUrl || !tokenValid) return;
+    setSubmitting(true);
+    setReReviewError("");
+    try {
+      const { reviewId } = await submitReview({
+        prUrl: result.prUrl,
+        token: buildFullToken(),
+        options: result.options ?? {},
+      });
+      navigate(`/review/${reviewId}`);
+    } catch (err) {
+      setReReviewError(err instanceof Error ? err.message : "Failed to start re-review");
+      setSubmitting(false);
+    }
+  };
+
+  const closeReReviewModal = () => {
+    setReReviewOpen(false);
+    setEmail("");
+    setToken("");
+    setTokenValid(false);
+    setValidationResult(null);
+    setReReviewError("");
+  };
 
   useEffect(() => {
     if (!id) return;
@@ -126,6 +185,11 @@ export default function ReviewResults() {
           <button onClick={handleExportCSV} className={ghostButtonClass}>
             Export CSV
           </button>
+          {result.prUrl && (
+            <button onClick={() => setReReviewOpen(true)} className={ghostButtonClass}>
+              Re-review
+            </button>
+          )}
         </div>
       </div>
 
@@ -334,6 +398,115 @@ export default function ReviewResults() {
                 </span>
               </div>
             ))}
+          </div>
+        </div>
+      )}
+
+      {/* Re-review Modal */}
+      {reReviewOpen && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center">
+          <div
+            className="absolute inset-0 bg-ink-950/40 backdrop-blur-sm"
+            onClick={closeReReviewModal}
+          />
+          <div className="relative w-full max-w-md bg-white border border-ink-900 p-6 shadow-lg">
+            <button
+              onClick={closeReReviewModal}
+              className="absolute top-4 right-4 text-ink-500 hover:text-ink-700"
+            >
+              <svg className="h-5 w-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
+              </svg>
+            </button>
+
+            <h3 className="text-lg font-semibold text-ink-950 mb-4">Re-review PR</h3>
+
+            <div className="space-y-4">
+              {/* PR URL (readonly) */}
+              <div>
+                <label className={`${statLabelClass} block mb-1`}>PR URL</label>
+                <div className="px-3 py-2 bg-warm-100 border border-ink-900 text-sm text-ink-700 font-mono truncate">
+                  {result.prUrl}
+                </div>
+              </div>
+
+              {/* Options summary */}
+              {result.options && (Object.keys(result.options).length > 0) && (
+                <div>
+                  <label className={`${statLabelClass} block mb-1`}>Options</label>
+                  <div className="px-3 py-2 bg-warm-100 border border-ink-900 text-sm text-ink-600 space-y-1">
+                    {result.options.skipSecurity && <div>Skip Security: Yes</div>}
+                    {result.options.skipDuplication && <div>Skip Duplication: Yes</div>}
+                    {result.options.priorityFiles && result.options.priorityFiles.length > 0 && (
+                      <div>Priority Files: {result.options.priorityFiles.join(", ")}</div>
+                    )}
+                  </div>
+                </div>
+              )}
+
+              {/* Email input */}
+              <div>
+                <label className={`${statLabelClass} block mb-1`}>Bitbucket Email</label>
+                <input
+                  type="email"
+                  value={email}
+                  onChange={(e) => {
+                    setEmail(e.target.value);
+                    setTokenValid(false);
+                    setValidationResult(null);
+                  }}
+                  placeholder="your-email@example.com"
+                  className="w-full border border-ink-900 px-3 py-2 text-sm focus:border-brand-500 focus:outline-none"
+                />
+              </div>
+
+              {/* Token input */}
+              <div>
+                <label className={`${statLabelClass} block mb-1`}>App Password</label>
+                <div className="flex gap-2">
+                  <input
+                    type="password"
+                    value={token}
+                    onChange={(e) => {
+                      setToken(e.target.value);
+                      setTokenValid(false);
+                      setValidationResult(null);
+                    }}
+                    placeholder="App password"
+                    className="flex-1 border border-ink-900 px-3 py-2 text-sm focus:border-brand-500 focus:outline-none"
+                  />
+                  <button
+                    onClick={handleValidate}
+                    disabled={!email || !token || validating}
+                    className={`${ghostButtonClass} ${(!email || !token || validating) ? "opacity-50 cursor-not-allowed" : ""}`}
+                  >
+                    {validating ? "..." : "Validate"}
+                  </button>
+                </div>
+              </div>
+
+              {/* Validation feedback */}
+              {validationResult && tokenValid && (
+                <div className="px-3 py-2 bg-emerald-50 border border-emerald-300 text-sm text-emerald-700">
+                  Token valid! Logged in as <span className="font-semibold">{validationResult.username}</span>
+                </div>
+              )}
+
+              {reReviewError && (
+                <div className="px-3 py-2 bg-rose-50 border border-rose-300 text-sm text-rose-700">
+                  {reReviewError}
+                </div>
+              )}
+
+              {/* Submit button */}
+              <button
+                onClick={handleReReview}
+                disabled={!tokenValid || submitting}
+                className={`w-full border border-ink-900 bg-ink-950 px-4 py-2.5 text-[11px] font-semibold uppercase tracking-[0.3em] text-white transition hover:bg-ink-800 ${(!tokenValid || submitting) ? "opacity-50 cursor-not-allowed" : ""}`}
+              >
+                {submitting ? "Starting..." : "Start Re-review"}
+              </button>
+            </div>
           </div>
         </div>
       )}

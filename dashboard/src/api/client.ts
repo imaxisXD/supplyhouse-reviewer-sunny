@@ -132,6 +132,11 @@ export interface ReviewResult {
   };
   traces?: AgentTrace[];
   prUrl?: string;
+  options?: {
+    skipSecurity?: boolean;
+    skipDuplication?: boolean;
+    priorityFiles?: string[];
+  };
 }
 
 export interface ReviewListItem {

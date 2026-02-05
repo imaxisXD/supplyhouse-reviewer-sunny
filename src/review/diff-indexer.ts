@@ -385,7 +385,9 @@ export function resolveFindingLine(
       .map((line) => line.newLine as number);
 
     if (candidates.length > 0) {
-      const target = Number.isFinite(finding.line) ? finding.line : candidates[0]!;
+      // Use original line as target if valid and positive, otherwise just use first match
+      const hasValidTarget = Number.isFinite(finding.line) && finding.line > 0;
+      const target = hasValidTarget ? finding.line : candidates[0]!;
       const best = candidates.reduce((a, b) =>
         Math.abs(a - target) <= Math.abs(b - target) ? a : b,
       );

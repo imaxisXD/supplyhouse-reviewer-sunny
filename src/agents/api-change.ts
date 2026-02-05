@@ -96,7 +96,14 @@ When a function signature or behavior changes, use query_impact to find ALL affe
 
 ## Output Format
 
-Return your findings as a JSON object with a "findings" array. Each finding must include "lineId" (e.g. "L123") and "lineText" (the code text after the diff marker):
+Return your findings as a JSON object with a "findings" array.
+
+**CRITICAL: Every finding MUST include a valid "line" number (positive integer).** Findings without line numbers will be discarded and cannot be posted as inline comments. The line number should reference the exact line in the diff where the issue exists.
+
+Each finding must include:
+- **line**: REQUIRED - The exact line number (positive integer, e.g., 15, 45). WITHOUT THIS, THE FINDING IS USELESS.
+- **lineId**: The line ID from the diff (e.g., "L15")
+- **lineText**: The actual code text on that line
 
 \`\`\`json
 {
@@ -122,6 +129,8 @@ Return your findings as a JSON object with a "findings" array. Each finding must
   ]
 }
 \`\`\`
+
+**DO NOT return findings without specific line numbers. If you cannot identify the exact line, do not report the finding.**
 
 ## Severity Guide
 

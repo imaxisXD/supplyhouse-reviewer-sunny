@@ -143,7 +143,16 @@ Many "missing controls" are false positives because:
 
 ## Output Format
 
-Return findings as JSON. Each finding should explain what is MISSING and why it matters:
+Return findings as JSON. Each finding should explain what is MISSING and why it matters.
+
+**CRITICAL: Every finding MUST include a valid "line" number (positive integer).** Findings without line numbers will be discarded and cannot be posted as inline comments. The line number should reference the exact line in the diff where the issue exists.
+
+Each finding must include:
+- **line**: REQUIRED - The exact line number (positive integer, e.g., 45). WITHOUT THIS, THE FINDING IS USELESS.
+- **lineId**: The line ID from the diff (e.g., "L45")
+- **lineText**: The actual code text on that line
+
+**DO NOT return findings without specific line numbers. If you cannot identify the exact line, do not report the finding.**
 
 \`\`\`json
 {
