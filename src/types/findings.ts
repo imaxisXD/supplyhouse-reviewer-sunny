@@ -29,6 +29,8 @@ export interface Finding {
   disproven?: boolean;
   disprovenReason?: string;
   verificationNotes?: string;
+  /** Finding couldn't be mapped to a specific line - shown in summary only */
+  unlocatable?: boolean;
 }
 
 export interface AgentTrace {
