@@ -41,6 +41,26 @@ export interface RepoMeta {
   updatedAt?: string;
 }
 
+export interface RepoDocListItem {
+  id: string;
+  repoId: string;
+  title: string;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface RepoDoc extends RepoDocListItem {
+  body: string;
+}
+
+export interface RepoDocSummary {
+  repoId: string;
+  hasDocs: boolean;
+  docCount: number;
+  summaryMarkdown: string;
+  latestUpdatedAt?: string | null;
+}
+
 export interface IndexFramework {
   id: string;
   name: string;
@@ -89,6 +109,13 @@ export interface Finding {
   disproven?: boolean;
   disprovenReason?: string;
   verificationNotes?: string;
+  /** Investigation trail documenting how the agent verified this finding */
+  investigation?: {
+    toolsUsed: string[];
+    filesChecked: string[];
+    patternsSearched: string[];
+    conclusion: string;
+  };
 }
 
 export interface AgentTrace {
@@ -104,6 +131,13 @@ export interface AgentTrace {
   error?: string;
   /** Reference to Mastra's native trace for detailed span analysis */
   mastraTraceId?: string;
+  /** OpenRouter generation ID for re-fetching cost data */
+  generationId?: string;
+  /** Tool usage summary — tracks whether the agent actually used its tools */
+  toolUsage?: {
+    totalCalls: number;
+    byTool: Record<string, number>;
+  };
 }
 
 export interface ReviewResult {
@@ -217,6 +251,54 @@ export interface WSEvent {
   error?: string;
   /** Mastra trace ID for viewing detailed spans */
   mastraTraceId?: string;
+}
+
+// ---------------------------------------------------------------------------
+// Repo Docs APIs
+// ---------------------------------------------------------------------------
+
+export async function getRepoDocs(repoId: string): Promise<{ docs: RepoDocListItem[] }> {
+  const res = await fetch(`${BASE_URL}/api/docs/repos/${encodeURIComponent(repoId)}`);
+  if (!res.ok) throw new Error(`Failed to fetch repo docs: ${res.statusText}`);
+  return res.json();
+}
+
+export async function getRepoDocSummary(repoId: string): Promise<RepoDocSummary> {
+  const res = await fetch(`${BASE_URL}/api/docs/repos/${encodeURIComponent(repoId)}/summary`);
+  if (!res.ok) throw new Error(`Failed to fetch repo docs summary: ${res.statusText}`);
+  return res.json();
+}
+
+export async function getRepoDoc(docId: string): Promise<RepoDoc> {
+  const res = await fetch(`${BASE_URL}/api/docs/${docId}`);
+  if (!res.ok) throw new Error(`Failed to fetch repo doc: ${res.statusText}`);
+  return res.json();
+}
+
+export async function createRepoDoc(input: { repoId: string; title: string; body: string }): Promise<RepoDoc> {
+  const res = await fetch(`${BASE_URL}/api/docs`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(input),
+  });
+  if (!res.ok) throw new Error(`Failed to create repo doc: ${res.statusText}`);
+  return res.json();
+}
+
+export async function updateRepoDoc(docId: string, input: { title: string; body: string }): Promise<RepoDoc> {
+  const res = await fetch(`${BASE_URL}/api/docs/${docId}`, {
+    method: "PUT",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(input),
+  });
+  if (!res.ok) throw new Error(`Failed to update repo doc: ${res.statusText}`);
+  return res.json();
+}
+
+export async function deleteRepoDoc(docId: string): Promise<{ ok: boolean }> {
+  const res = await fetch(`${BASE_URL}/api/docs/${docId}`, { method: "DELETE" });
+  if (!res.ok) throw new Error(`Failed to delete repo doc: ${res.statusText}`);
+  return res.json();
 }
 
 // ---------------------------------------------------------------------------
@@ -368,6 +450,12 @@ export async function getMetrics(): Promise<Metrics> {
   return res.json();
 }
 
+export async function refreshCosts(): Promise<Metrics & { refreshStats?: { updatedCount: number; skippedCount: number; errorCount: number } }> {
+  const res = await fetch(`${BASE_URL}/api/metrics/refresh-costs`, { method: "POST" });
+  if (!res.ok) throw new Error(`Failed to refresh costs: ${res.statusText}`);
+  return res.json();
+}
+
 // ---------------------------------------------------------------------------
 // Graph APIs
 // ---------------------------------------------------------------------------
@@ -412,6 +500,8 @@ export interface GraphLink {
   target: string;
   type: GraphEdgeType;
   weight?: number;
+  line?: number;       // CALLS: call-site line number
+  symbols?: string[];  // IMPORTS: imported symbol names
 }
 
 export interface GraphData {
@@ -507,15 +597,38 @@ export interface TraceStatsResponse {
   error?: string;
 }
 
+export interface ReviewTraceAgent {
+  name: string;
+  traceId: string;
+  startTime: string | null;
+  endTime: string | null;
+  status: string;
+}
+
+export interface ReviewTraceGroup {
+  reviewId: string;
+  prUrl: string | null;
+  agentCount: number;
+  startTime: string | null;
+  endTime: string | null;
+  agents: ReviewTraceAgent[];
+}
+
+export interface ReviewTraceGroupResponse {
+  reviews: ReviewTraceGroup[];
+}
+
 export async function getMastraTraces(params?: {
   limit?: number;
   name?: string;
+  reviewId?: string;
   startDate?: string;
   endDate?: string;
 }): Promise<TraceListResponse> {
   const searchParams = new URLSearchParams();
   if (params?.limit) searchParams.set("limit", String(params.limit));
   if (params?.name) searchParams.set("name", params.name);
+  if (params?.reviewId) searchParams.set("reviewId", params.reviewId);
   if (params?.startDate) searchParams.set("startDate", params.startDate);
   if (params?.endDate) searchParams.set("endDate", params.endDate);
 
@@ -539,6 +652,12 @@ export async function getMastraSpans(traceId: string): Promise<SpansResponse> {
 export async function getMastraTraceStats(): Promise<TraceStatsResponse> {
   const res = await fetch(`${BASE_URL}/api/traces/stats`);
   if (!res.ok) throw new Error(`Failed to fetch trace stats: ${res.statusText}`);
+  return res.json();
+}
+
+export async function getTracesByReview(): Promise<ReviewTraceGroupResponse> {
+  const res = await fetch(`${BASE_URL}/api/traces/by-review`);
+  if (!res.ok) throw new Error(`Failed to fetch traces by review: ${res.statusText}`);
   return res.json();
 }
 

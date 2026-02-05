@@ -148,6 +148,21 @@ export default function TraceViewer() {
                       </span>
                     </div>
                     <div className="flex items-center gap-4 text-xs text-ink-600">
+                      {trace.toolUsage && (
+                        <span className="flex items-center gap-1">
+                          {trace.toolUsage.totalCalls > 0 ? (
+                            <span title={Object.entries(trace.toolUsage.byTool).map(([t, c]) => `${t}: ${c}`).join(', ')}>
+                              {trace.toolUsage.totalCalls} tool calls
+                            </span>
+                          ) : trace.findingsCount > 0 ? (
+                            <span className="text-amber-600 font-medium" title="Agent reported findings without using any tools — findings may be speculative">
+                              0 tools used
+                            </span>
+                          ) : (
+                            <span>0 tools</span>
+                          )}
+                        </span>
+                      )}
                       <span>
                         {(trace.durationMs / 1000).toFixed(1)}s
                       </span>

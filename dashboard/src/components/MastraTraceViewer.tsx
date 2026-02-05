@@ -1,11 +1,12 @@
 import { useEffect, useState } from "react";
 import {
-  getMastraTraces,
+  getTracesByReview,
   getMastraSpans,
   getMastraTraceStats,
 } from "../api/client";
 import type {
-  MastraTrace,
+  ReviewTraceGroup,
+  ReviewTraceAgent,
   MastraSpan,
   TraceStatsResponse,
 } from "../api/client";
@@ -18,14 +19,6 @@ const SPAN_TYPE_COLORS: Record<string, string> = {
   default: "bg-ink-400",
 };
 
-const SPAN_TYPE_TEXT_COLORS: Record<string, string> = {
-  agent_run: "text-brand-700",
-  model_generation: "text-emerald-700",
-  tool_call: "text-amber-700",
-  workflow_run: "text-violet-700",
-  default: "text-ink-600",
-};
-
 interface SpanTreeNode extends MastraSpan {
   children: SpanTreeNode[];
   depth: number;
@@ -35,12 +28,10 @@ function buildSpanTree(spans: MastraSpan[]): SpanTreeNode[] {
   const spanMap = new Map<string, SpanTreeNode>();
   const roots: SpanTreeNode[] = [];
 
-  // Initialize all spans as tree nodes
   for (const span of spans) {
     spanMap.set(span.id, { ...span, children: [], depth: 0 });
   }
 
-  // Build tree structure
   for (const span of spans) {
     const node = spanMap.get(span.id)!;
     if (span.parentSpanId) {
@@ -56,7 +47,6 @@ function buildSpanTree(spans: MastraSpan[]): SpanTreeNode[] {
     }
   }
 
-  // Sort children by start time
   function sortChildren(node: SpanTreeNode) {
     node.children.sort(
       (a, b) => new Date(a.startTime).getTime() - new Date(b.startTime).getTime()
@@ -78,7 +68,7 @@ function flattenTree(nodes: SpanTreeNode[]): SpanTreeNode[] {
   return result;
 }
 
-function formatDuration(startTime: string, endTime?: string): string {
+function formatDuration(startTime: string, endTime?: string | null): string {
   if (!endTime) return "running...";
   const durationMs = new Date(endTime).getTime() - new Date(startTime).getTime();
   if (durationMs < 1000) return `${durationMs}ms`;
@@ -94,8 +84,33 @@ function getSpanType(name: string): string {
   return "default";
 }
 
+/** Strip the "agent run: '" prefix and trailing "'" from Mastra span names */
+function shortAgentName(name: string): string {
+  return name.replace(/^agent run: '/, "").replace(/'$/, "");
+}
+
+/** Extract a short PR label from a Bitbucket PR URL, e.g. "workspace/repo#123" */
+function shortPrLabel(prUrl: string | null, reviewId: string): string {
+  if (!prUrl) return reviewId.slice(0, 8) + "...";
+  try {
+    // e.g. https://bitbucket.org/workspace/repo/pull-requests/123
+    const parts = new URL(prUrl).pathname.split("/").filter(Boolean);
+    if (parts.length >= 4 && parts[2] === "pull-requests") {
+      return `${parts[0]}/${parts[1]}#${parts[3]}`;
+    }
+  } catch { /* ignore parse error */ }
+  return reviewId.slice(0, 8) + "...";
+}
+
+const STATUS_DOT: Record<string, string> = {
+  success: "bg-emerald-500",
+  error: "bg-rose-500",
+  running: "bg-amber-400",
+};
+
 export default function MastraTraceViewer() {
-  const [traces, setTraces] = useState<MastraTrace[]>([]);
+  const [reviewGroups, setReviewGroups] = useState<ReviewTraceGroup[]>([]);
+  const [expandedReview, setExpandedReview] = useState<string | null>(null);
   const [selectedTraceId, setSelectedTraceId] = useState<string | null>(null);
   const [spans, setSpans] = useState<MastraSpan[]>([]);
   const [selectedSpan, setSelectedSpan] = useState<MastraSpan | null>(null);
@@ -104,26 +119,29 @@ export default function MastraTraceViewer() {
   const [loadingSpans, setLoadingSpans] = useState(false);
   const [error, setError] = useState("");
 
-  // Load traces and stats on mount
   useEffect(() => {
-    Promise.all([getMastraTraces({ limit: 50 }), getMastraTraceStats()])
-      .then(([tracesRes, statsRes]) => {
-        setTraces(tracesRes.traces);
+    Promise.all([getTracesByReview(), getMastraTraceStats()])
+      .then(([groupsRes, statsRes]) => {
+        setReviewGroups(groupsRes.reviews);
         setStats(statsRes);
       })
       .catch((err) => setError(err.message))
       .finally(() => setLoadingTraces(false));
   }, []);
 
-  const handleSelectTrace = async (traceId: string) => {
-    setSelectedTraceId(traceId);
+  const handleToggleReview = (reviewId: string) => {
+    setExpandedReview((prev) => (prev === reviewId ? null : reviewId));
+  };
+
+  const handleSelectAgent = async (agent: ReviewTraceAgent) => {
+    setSelectedTraceId(agent.traceId);
     setLoadingSpans(true);
     setSpans([]);
     setSelectedSpan(null);
     setError("");
 
     try {
-      const result = await getMastraSpans(traceId);
+      const result = await getMastraSpans(agent.traceId);
       setSpans(result.spans);
     } catch (err) {
       setError(err instanceof Error ? err.message : "Failed to load spans");
@@ -135,7 +153,6 @@ export default function MastraTraceViewer() {
   const spanTree = buildSpanTree(spans);
   const flatSpans = flattenTree(spanTree);
 
-  // Calculate timeline bounds
   const timelineStart = spans.length > 0
     ? Math.min(...spans.map((s) => new Date(s.startTime).getTime()))
     : 0;
@@ -161,9 +178,9 @@ export default function MastraTraceViewer() {
           </div>
           <div className="bg-white border border-ink-900 p-4">
             <div className="text-2xl font-semibold text-ink-900">
-              {stats.totalSpans}
+              {reviewGroups.length}
             </div>
-            <div className="text-sm text-ink-600">Total Spans</div>
+            <div className="text-sm text-ink-600">Reviews</div>
           </div>
           <div className="bg-white border border-ink-900 p-4">
             <div className="text-2xl font-semibold text-ink-900">
@@ -180,51 +197,98 @@ export default function MastraTraceViewer() {
                     SPAN_TYPE_COLORS[getSpanType(type)] ?? SPAN_TYPE_COLORS.default
                   } text-white`}
                 >
-                  {type}: {count}
+                  {shortAgentName(type)}: {count}
                 </span>
               ))}
             </div>
-            <div className="text-sm text-ink-600 mt-1">Span Types</div>
+            <div className="text-sm text-ink-600 mt-1">Agent Types</div>
           </div>
         </div>
       )}
 
       {/* Main Content */}
       <div className="flex gap-6 min-h-[500px]">
-        {/* Left panel - trace list */}
-        <div className="w-72 shrink-0">
-          <h3 className="text-sm font-medium text-ink-700 mb-3">Recent Traces</h3>
+        {/* Left panel - review list */}
+        <div className="w-80 shrink-0">
+          <h3 className="text-sm font-medium text-ink-700 mb-3">Reviews</h3>
           {loadingTraces && (
             <p className="text-sm text-ink-600">Loading traces...</p>
           )}
-          {!loadingTraces && traces.length === 0 && (
+          {!loadingTraces && reviewGroups.length === 0 && (
             <p className="text-sm text-ink-600">
-              No traces found. Run an agent to generate traces.
+              No traces found. Run a review to generate traces.
             </p>
           )}
           <div className="space-y-1 max-h-[500px] overflow-y-auto">
-            {traces.map((trace) => (
-              <button
-                key={trace.id}
-                onClick={() => handleSelectTrace(trace.id)}
-                className={`w-full text-left px-3 py-2.5 text-sm transition-colors border ${
-                  selectedTraceId === trace.id
-                    ? "bg-brand-500/10 border-brand-500/40 text-brand-700"
-                    : "bg-white border-ink-900 text-ink-700 hover:bg-warm-100"
-                }`}
-              >
-                <div className="font-mono text-xs truncate">{trace.id}</div>
-                {trace.name && (
-                  <div className="text-sm text-ink-800 truncate mt-0.5">
-                    {trace.name}
-                  </div>
-                )}
-                <div className="text-xs text-ink-500 mt-0.5">
-                  {new Date(trace.startTime).toLocaleDateString()}{" "}
-                  {new Date(trace.startTime).toLocaleTimeString()}
+            {reviewGroups.map((group) => {
+              const isExpanded = expandedReview === group.reviewId;
+              const isUnlinked = group.reviewId === "unlinked";
+              return (
+                <div key={group.reviewId}>
+                  {/* Review header row */}
+                  <button
+                    onClick={() => handleToggleReview(group.reviewId)}
+                    className={`w-full text-left px-3 py-2.5 text-sm transition-colors border ${
+                      isExpanded
+                        ? "bg-brand-500/10 border-brand-500/40"
+                        : "bg-white border-ink-900 hover:bg-warm-100"
+                    }`}
+                  >
+                    <div className="flex items-center justify-between">
+                      <div className="flex items-center gap-2 min-w-0">
+                        <span className={`transition-transform text-ink-500 text-xs ${isExpanded ? "rotate-90" : ""}`}>
+                          ▶
+                        </span>
+                        <span className="font-mono text-xs text-ink-800 truncate">
+                          {isUnlinked ? "Unlinked traces" : shortPrLabel(group.prUrl, group.reviewId)}
+                        </span>
+                      </div>
+                      <span className="text-xs text-ink-500 shrink-0 ml-2">
+                        {group.agentCount} agents
+                      </span>
+                    </div>
+                    {group.startTime && (
+                      <div className="text-xs text-ink-500 mt-1 pl-5">
+                        {new Date(group.startTime).toLocaleDateString()}{" "}
+                        {new Date(group.startTime).toLocaleTimeString()}
+                        {group.startTime && group.endTime && (
+                          <span className="ml-2 text-ink-400">
+                            ({formatDuration(group.startTime, group.endTime)})
+                          </span>
+                        )}
+                      </div>
+                    )}
+                  </button>
+
+                  {/* Expanded agent list */}
+                  {isExpanded && (
+                    <div className="ml-4 space-y-0.5 mt-0.5">
+                      {group.agents.map((agent) => (
+                        <button
+                          key={agent.traceId}
+                          onClick={() => handleSelectAgent(agent)}
+                          className={`w-full text-left px-3 py-2 text-xs transition-colors border ${
+                            selectedTraceId === agent.traceId
+                              ? "bg-brand-500/10 border-brand-500/40 text-brand-700"
+                              : "bg-warm-50 border-ink-900 text-ink-700 hover:bg-warm-100"
+                          }`}
+                        >
+                          <div className="flex items-center justify-between">
+                            <div className="flex items-center gap-2 min-w-0">
+                              <span className={`w-1.5 h-1.5 rounded-full shrink-0 ${STATUS_DOT[agent.status] ?? STATUS_DOT.running}`} />
+                              <span className="truncate">{shortAgentName(agent.name)}</span>
+                            </div>
+                            <span className="text-ink-500 shrink-0 ml-2">
+                              {agent.startTime && formatDuration(agent.startTime, agent.endTime)}
+                            </span>
+                          </div>
+                        </button>
+                      ))}
+                    </div>
+                  )}
                 </div>
-              </button>
-            ))}
+              );
+            })}
           </div>
         </div>
 
@@ -234,7 +298,7 @@ export default function MastraTraceViewer() {
 
           {!selectedTraceId && (
             <div className="flex items-center justify-center h-64 text-ink-600 text-sm">
-              Select a trace from the left panel to view its spans.
+              Expand a review and select an agent to view its spans.
             </div>
           )}
 
@@ -300,7 +364,6 @@ export default function MastraTraceViewer() {
                           {formatDuration(span.startTime, span.endTime)}
                         </span>
                       </div>
-                      {/* Timeline bar */}
                       <div className="w-full h-3 bg-warm-200 overflow-hidden relative">
                         <div
                           className={`absolute h-full ${SPAN_TYPE_COLORS[spanType]}`}

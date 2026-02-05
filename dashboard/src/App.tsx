@@ -8,6 +8,7 @@ import Indexing from "./pages/Indexing";
 import Observability from "./pages/Observability";
 import Reviews from "./pages/Reviews";
 import Repos from "./pages/Repos";
+import RepoDocs from "./pages/RepoDocs";
 
 const RepoGraph = lazy(() => import("./pages/RepoGraph"));
 
@@ -33,6 +34,7 @@ export default function App() {
                   </Suspense>
                 }
               />
+              <Route path="/repo/:repoId/docs" element={<RepoDocs />} />
               <Route path="/indexing" element={<Indexing />} />
               <Route path="/observability" element={<Observability />} />
             </Routes>

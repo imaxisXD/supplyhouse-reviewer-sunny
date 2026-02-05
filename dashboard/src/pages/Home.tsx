@@ -1,7 +1,8 @@
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { Link, useNavigate } from "react-router-dom";
-import { getReviewsList, submitReview, validateToken } from "../api/client";
-import type { ReviewListItem, TokenValidationResult } from "../api/client";
+import ReactMarkdown from "react-markdown";
+import { getRepoDocSummary, getReviewsList, submitReview, validateToken } from "../api/client";
+import type { RepoDocSummary, ReviewListItem, TokenValidationResult } from "../api/client";
 import { useJourney, journeySteps, getJourneyStatus } from "../journey";
 
 const panelClass =
@@ -53,15 +54,75 @@ export default function Home() {
   const [tokenValid, setTokenValid] = useState(false);
   const [validationResult, setValidationResult] = useState<TokenValidationResult | null>(null);
   const [showHelp, setShowHelp] = useState(false);
+  const [repoDocSummary, setRepoDocSummary] = useState<RepoDocSummary | null>(null);
+  const [repoDocLoading, setRepoDocLoading] = useState(false);
+  const [repoDocError, setRepoDocError] = useState("");
 
   const prUrlPattern = /^https?:\/\/bitbucket\.org\/[\w.-]+\/[\w.-]+\/pull-requests\/\d+/;
   const prUrlValid = prUrlPattern.test(prUrl);
+
+  const repoIdFromPrUrl = useMemo(() => {
+    return (value: string): string | null => {
+      try {
+        const url = new URL(value);
+        const parts = url.pathname.split("/").filter(Boolean);
+        if (parts.length >= 2) {
+          return `${parts[0]}/${parts[1]}`;
+        }
+      } catch {
+        // ignore
+      }
+      return null;
+    };
+  }, []);
 
   // Reset validation when inputs change
   useEffect(() => {
     setTokenValid(false);
     setValidationResult(null);
   }, [prUrl, email, token]);
+
+  useEffect(() => {
+    if (!prUrlValid) {
+      setRepoDocSummary(null);
+      setRepoDocError("");
+      setRepoDocLoading(false);
+      return;
+    }
+
+    const repoId = repoIdFromPrUrl(prUrl);
+    if (!repoId) {
+      setRepoDocSummary(null);
+      setRepoDocError("");
+      return;
+    }
+
+    setRepoDocSummary(null);
+    setRepoDocLoading(true);
+    let active = true;
+    const timer = setTimeout(() => {
+      setRepoDocError("");
+      getRepoDocSummary(repoId)
+        .then((summary) => {
+          if (!active) return;
+          setRepoDocSummary(summary);
+        })
+        .catch((err) => {
+          if (!active) return;
+          setRepoDocSummary(null);
+          setRepoDocError(err instanceof Error ? err.message : "Failed to load repo docs");
+        })
+        .finally(() => {
+          if (!active) return;
+          setRepoDocLoading(false);
+        });
+    }, 350);
+
+    return () => {
+      active = false;
+      clearTimeout(timer);
+    };
+  }, [prUrlValid, prUrl, repoIdFromPrUrl]);
 
   useEffect(() => {
     setRecentLoading(true);
@@ -148,6 +209,7 @@ export default function Home() {
   const isFirstRun = !journeyLoading && !recentLoading && recent.length === 0 && currentStep === "submit";
 
   const activeStep = journeySteps.find((step) => step.id === currentStep);
+  const repoIdForDocs = prUrlValid ? repoIdFromPrUrl(prUrl) : null;
 
   return (
     <div className="space-y-6">
@@ -262,6 +324,129 @@ export default function Home() {
                   </span>
                 )}
               </div>
+            </div>
+
+            {/* ── Repository Docs ── */}
+            <div className={`border border-t-0 border-ink-900 ${!prUrlValid ? "opacity-60" : ""}`}>
+              <div className="flex items-center gap-3 p-4 pb-0">
+                <span className="flex h-7 w-7 items-center justify-center border border-ink-900 bg-warm-50">
+                  <svg viewBox="0 0 16 16" fill="none" className="h-3.5 w-3.5 text-ink-700">
+                    <path d="M4 2h6l3 3v9H4V2z" stroke="currentColor" strokeWidth="1.2" strokeLinejoin="round" />
+                    <path d="M6 8h5M6 10.5h3" stroke="currentColor" strokeWidth="1" strokeLinecap="round" />
+                  </svg>
+                </span>
+                <span className={stepTitleClass(prUrlValid)}>Repository Docs</span>
+                {repoDocLoading ? (
+                  <span className="inline-flex items-center gap-1.5 px-2 py-0.5 text-[10px] font-semibold uppercase tracking-[0.2em] text-ink-600">
+                    <span className="inline-block h-1.5 w-1.5 rounded-full bg-ink-600 animate-pulse" />
+                    Checking
+                  </span>
+                ) : repoDocSummary?.hasDocs ? (
+                  <span className="inline-flex items-center gap-1.5 px-2 py-0.5 text-[10px] font-semibold uppercase tracking-[0.2em] text-emerald-700">
+                    <span className="inline-block h-1.5 w-1.5 rounded-full bg-emerald-500" />
+                    {repoDocSummary.docCount} {repoDocSummary.docCount === 1 ? "doc" : "docs"}
+                  </span>
+                ) : repoDocError ? (
+                  <span className="inline-flex items-center gap-1.5 px-2 py-0.5 text-[10px] font-semibold uppercase tracking-[0.2em] text-rose-700">
+                    <span className="inline-block h-1.5 w-1.5 rounded-full bg-rose-500" />
+                    Error
+                  </span>
+                ) : prUrlValid ? (
+                  <span className="inline-flex items-center gap-1.5 px-2 py-0.5 text-[10px] font-semibold uppercase tracking-[0.2em] text-amber-700">
+                    <span className="inline-block h-1.5 w-1.5 rounded-full bg-amber-500" />
+                    None
+                  </span>
+                ) : null}
+                <div className="ml-auto">
+                  {repoIdForDocs && (
+                    <Link
+                      to={`/repo/${encodeURIComponent(repoIdForDocs)}/docs`}
+                      className="inline-flex items-center gap-1.5 text-[10px] uppercase tracking-[0.2em] text-brand-600 hover:text-brand-700 transition"
+                    >
+                      {repoDocSummary?.hasDocs ? "Edit" : "Create"}
+                      <svg viewBox="0 0 12 12" fill="none" className="h-3 w-3">
+                        <path d="M4.5 2.5L8 6L4.5 9.5" stroke="currentColor" strokeWidth="1.2" strokeLinecap="round" strokeLinejoin="round" />
+                      </svg>
+                    </Link>
+                  )}
+                </div>
+              </div>
+              <p className="mt-1.5 ml-[52px] px-4 pb-3 text-xs text-ink-600">
+                Repo-specific rules and conventions injected into review agents.
+              </p>
+
+              {repoDocLoading && (
+                <div className="mx-4 mb-4 ml-[52px] border-t border-dashed border-ink-900/30 pt-3">
+                  <div className="flex items-center gap-2 text-xs text-ink-500">
+                    <svg className="h-3 w-3 animate-spin" viewBox="0 0 16 16" fill="none">
+                      <circle cx="8" cy="8" r="6" stroke="currentColor" strokeWidth="1.5" opacity="0.25" />
+                      <path d="M14 8a6 6 0 00-6-6" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" />
+                    </svg>
+                    Loading docs…
+                  </div>
+                </div>
+              )}
+
+              {repoDocError && (
+                <div className="mx-4 mb-4 ml-[52px] border border-rose-300/60 bg-rose-50/50 px-3 py-2 text-xs text-rose-700">
+                  {repoDocError}
+                </div>
+              )}
+
+              {!repoDocLoading && !repoDocError && repoDocSummary?.hasDocs && (
+                <div className="mx-4 mb-4 ml-[52px]">
+                  <div className="border border-ink-900/40 bg-warm-50/50">
+                    {repoDocSummary.latestUpdatedAt && (
+                      <div className="flex items-center justify-between border-b border-ink-900/20 px-3 py-1.5">
+                        <span className="text-[10px] uppercase tracking-[0.3em] text-ink-600">Preview</span>
+                        <span className="text-[10px] tracking-wide text-ink-500">
+                          Updated {repoDocSummary.latestUpdatedAt}
+                        </span>
+                      </div>
+                    )}
+                    <div className="max-h-36 overflow-y-auto p-3 scrollbar-thin">
+                      <ReactMarkdown
+                        components={{
+                          h3: ({ children }) => (
+                            <h3 className="text-[10px] font-semibold uppercase tracking-[0.25em] text-ink-800 mt-3 first:mt-0 mb-1.5 pb-1 border-b border-ink-900/10">
+                              {children}
+                            </h3>
+                          ),
+                          p: ({ children }) => <p className="text-xs leading-relaxed text-ink-700 mb-2 last:mb-0">{children}</p>,
+                          em: ({ children }) => <em className="text-ink-500 not-italic text-[11px]">{children}</em>,
+                          ul: ({ children }) => <ul className="ml-3 text-xs text-ink-700 space-y-0.5 mb-2 last:mb-0">{children}</ul>,
+                          li: ({ children }) => (
+                            <li className="relative pl-3 before:absolute before:left-0 before:top-[0.55em] before:h-[3px] before:w-[3px] before:bg-ink-600/50">
+                              {children}
+                            </li>
+                          ),
+                        }}
+                      >
+                        {repoDocSummary.summaryMarkdown}
+                      </ReactMarkdown>
+                    </div>
+                  </div>
+                </div>
+              )}
+
+              {!repoDocLoading && !repoDocError && !repoDocSummary?.hasDocs && prUrlValid && (
+                <div className="mx-4 mb-4 ml-[52px] border border-dashed border-ink-900/30 bg-warm-50/30 px-3 py-3">
+                  <div className="flex items-center gap-2 text-xs text-ink-600">
+                    <svg viewBox="0 0 16 16" fill="none" className="h-3.5 w-3.5 text-ink-500 shrink-0">
+                      <path d="M4 2h6l3 3v9H4V2z" stroke="currentColor" strokeWidth="1.2" strokeLinejoin="round" strokeDasharray="2 2" />
+                    </svg>
+                    <span>No docs for this repo.</span>
+                    {repoIdForDocs && (
+                      <Link
+                        to={`/repo/${encodeURIComponent(repoIdForDocs)}/docs`}
+                        className="text-brand-600 hover:underline"
+                      >
+                        Add docs to improve reviews →
+                      </Link>
+                    )}
+                  </div>
+                </div>
+              )}
             </div>
 
             {/* ── Step 2: Token Validation ── */}

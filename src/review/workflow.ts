@@ -1,5 +1,5 @@
 import type { ReviewJob, ReviewStatus, ReviewPhase } from "../types/review.ts";
-import type { Finding, ReviewResult, Severity, Category, AgentTrace } from "../types/findings.ts";
+import type { Finding, ReviewResult, Severity, Category, AgentTrace, ToolUsageSummary } from "../types/findings.ts";
 import type { ContextPackage } from "./context-builder.ts";
 import type { DiffFile, PRDetails } from "../types/bitbucket.ts";
 import type { Logger } from "pino";
@@ -67,6 +67,7 @@ import {
 } from "./diff-indexer.ts";
 import { buildDomainFactsIndex, type FileDomainFacts, type PrDomainFacts } from "./domain-facts.ts";
 import { applyEvidenceGates } from "./evidence-gates.ts";
+import { buildRepoDocsContext } from "./repo-docs-context.ts";
 
 const log = createLogger("review-workflow");
 const CLONE_BASE_DIR = process.env.CLONE_DIR || "/tmp/supplyhouse-repos";
@@ -684,14 +685,34 @@ export async function executeReview(job: ReviewJob, sessionLogger?: Logger): Pro
     );
 
     let plannerOutput: PlannerOutput | null = null;
+    const auxiliaryTraces: AgentTrace[] = [];
     if (!degradation.slowLlm) {
-      plannerOutput = await runPlannerAgent(reviewId, diffFiles, diffIndex, prDomainFactsText);
+      const plannerResult = await runPlannerAgent(reviewId, diffFiles, diffIndex, prDomainFactsText);
+      plannerOutput = plannerResult.output;
+      auxiliaryTraces.push(plannerResult.trace);
     }
     const plannerNotes = formatPlannerNotes(plannerOutput);
     const combinedPlannerNotes = [
       plannerNotes,
       prDomainFactsText ? `PR Domain Facts:\n${prDomainFactsText}` : "",
     ].filter(Boolean).join("\n");
+
+    let repoDocsContext: string | null = null;
+    try {
+      repoDocsContext = await buildRepoDocsContext({
+        repoId,
+        diffFiles,
+        prDetails,
+      });
+      if (repoDocsContext) {
+        log.info({ reviewId, repoId }, "Repo docs context prepared");
+      }
+    } catch (error) {
+      log.warn(
+        { reviewId, repoId, error: error instanceof Error ? error.message : String(error) },
+        "Failed to build repo docs context",
+      );
+    }
 
     // ------------------------------------------------------------------
     // Step 3: Build context
@@ -760,7 +781,7 @@ export async function executeReview(job: ReviewJob, sessionLogger?: Logger): Pro
       { repoId, repoPath },
       cancelKey,
       hasEmbeddings,
-      { prFacts, plannerNotes: combinedPlannerNotes },
+      { prFacts, plannerNotes: combinedPlannerNotes, repoDocs: repoDocsContext ?? undefined },
     );
     const agentsDurationMs = Date.now() - agentsStart;
     log.info(
@@ -818,6 +839,7 @@ export async function executeReview(job: ReviewJob, sessionLogger?: Logger): Pro
         verifiedFindings = verificationResult.verifiedFindings;
         disprovenFindings = verificationResult.disprovenFindings;
         disprovenCount = verificationResult.disprovenCount;
+        auxiliaryTraces.push(...verificationResult.traces);
         const verificationDurationMs = Date.now() - verificationStart;
         log.info(
           {
@@ -889,10 +911,12 @@ export async function executeReview(job: ReviewJob, sessionLogger?: Logger): Pro
     }));
     const synthesisStart = Date.now();
     log.info({ reviewId, findings: verifiedFindings.length }, "Synthesis started");
-    const synthesis = await synthesizeFindings(
+    const synthesisResult = await synthesizeFindings(
       reviewId, verifiedFindings, degradation,
       prDetails?.title, prDetails?.description, diffFilesMeta,
     );
+    const { trace: synthesisTrace, ...synthesis } = synthesisResult;
+    if (synthesisTrace) auxiliaryTraces.push(synthesisTrace);
     const synthesisDurationMs = Date.now() - synthesisStart;
     log.info(
       {
@@ -905,6 +929,9 @@ export async function executeReview(job: ReviewJob, sessionLogger?: Logger): Pro
     );
     await assertNotCancelled(cancelKey, "Review cancelled");
     const findings = synthesis.findings.length > 0 ? synthesis.findings : verifiedFindings;
+
+    // Merge auxiliary traces (planner, verification, synthesis) into the main traces array
+    traces.push(...auxiliaryTraces);
 
     const durationMs = Date.now() - startTime;
     const totalCostUsd = traces.reduce((sum, t) => sum + t.costUsd, 0);
@@ -980,6 +1007,9 @@ export async function executeReview(job: ReviewJob, sessionLogger?: Logger): Pro
 
     await redis.set(`review:result:${reviewId}`, JSON.stringify(result));
     await updateStatus(reviewId, "complete", 100, findings);
+
+    // Fire-and-forget: re-verify costs from OpenRouter after a short delay
+    void verifyCostsInBackground(reviewId, traces);
 
     await publish(`review:events:${reviewId}`, {
       type: "REVIEW_COMPLETE",
@@ -1143,7 +1173,8 @@ async function runPlannerAgent(
   diffFiles: DiffFile[],
   diffIndex: ReturnType<typeof buildDiffIndex>,
   prDomainFactsText?: string,
-): Promise<PlannerOutput | null> {
+): Promise<{ output: PlannerOutput | null; trace: AgentTrace }> {
+  const startedAt = new Date();
   const fileLines = diffFiles.map((f) =>
     `- ${f.path} (${f.status}, +${f.additions}/-${f.deletions}${f.oldPath ? `, renamed from ${f.oldPath}` : ""})`,
   );
@@ -1171,15 +1202,43 @@ async function runPlannerAgent(
   ].join("\n");
 
   try {
-    const result = await openRouterBreaker.execute(async () => plannerAgent.generate(prompt));
+    const result = await openRouterBreaker.execute(async () => plannerAgent.generate(prompt, { tracingOptions: { metadata: { reviewId } } }));
+    const completedAt = new Date();
     const text = typeof result.text === "string" ? result.text : "";
-    return parsePlannerOutput(text);
+    const usage = extractUsageFromResult(result);
+    return {
+      output: parsePlannerOutput(text),
+      trace: {
+        agent: "planner",
+        startedAt: startedAt.toISOString(),
+        completedAt: completedAt.toISOString(),
+        durationMs: completedAt.getTime() - startedAt.getTime(),
+        ...usage,
+        findingsCount: 0,
+        status: "success",
+      },
+    };
   } catch (error) {
+    const completedAt = new Date();
     log.warn(
       { reviewId, error: error instanceof Error ? error.message : String(error) },
       "Planner agent failed; continuing without planner notes",
     );
-    return null;
+    return {
+      output: null,
+      trace: {
+        agent: "planner",
+        startedAt: startedAt.toISOString(),
+        completedAt: completedAt.toISOString(),
+        durationMs: completedAt.getTime() - startedAt.getTime(),
+        inputTokens: 0,
+        outputTokens: 0,
+        costUsd: 0,
+        findingsCount: 0,
+        status: "failed",
+        error: error instanceof Error ? error.message : String(error),
+      },
+    };
   }
 }
 
@@ -1288,7 +1347,7 @@ function formatDomainFacts(facts?: FileDomainFacts): string {
  */
 function formatContextText(
   ctx: ContextPackage,
-  extras?: { prFacts?: string; plannerNotes?: string },
+  extras?: { prFacts?: string; plannerNotes?: string; repoDocs?: string },
 ): string {
   const annotatedDiff = annotateDiffWithLineNumbers(ctx.diff);
   const domainFactsText = formatDomainFacts(ctx.domainFacts);
@@ -1311,11 +1370,12 @@ function formatContextText(
  */
 function batchContextPackages(
   packages: ContextPackage[],
-  extras?: { prFacts?: string; plannerNotes?: string },
+  extras?: { prFacts?: string; plannerNotes?: string; repoDocs?: string },
 ): ContextPackage[][] {
   const batches: ContextPackage[][] = [];
   let currentBatch: ContextPackage[] = [];
-  let currentTokens = 0;
+  const fixedTokens = extras?.repoDocs ? estimateTokens(`### Repo Docs\n${extras.repoDocs}`) : 0;
+  let currentTokens = fixedTokens;
 
   for (const pkg of packages) {
     const text = formatContextText(pkg, extras);
@@ -1326,7 +1386,7 @@ function batchContextPackages(
       if (currentBatch.length > 0) {
         batches.push(currentBatch);
         currentBatch = [];
-        currentTokens = 0;
+        currentTokens = fixedTokens;
       }
       batches.push([pkg]);
       continue;
@@ -1335,7 +1395,7 @@ function batchContextPackages(
     if (currentTokens + tokens > MAX_TOKENS_PER_BATCH && currentBatch.length > 0) {
       batches.push(currentBatch);
       currentBatch = [];
-      currentTokens = 0;
+      currentTokens = fixedTokens;
     }
 
     currentBatch.push(pkg);
@@ -1362,13 +1422,24 @@ async function runAgents(
   repoContext: { repoId: string; repoPath: string },
   cancelKey: string,
   hasEmbeddings: boolean,
-  extras?: { prFacts?: string; plannerNotes?: string },
+  extras?: { prFacts?: string; plannerNotes?: string; repoDocs?: string },
 ): Promise<AgentResult> {
   await assertNotCancelled(cancelKey, "Review cancelled");
   const options = job.options || {};
+  const hasRepoDocsContext = Boolean(extras?.repoDocs);
+  const hasRepoDocsExcerpts = Boolean(extras?.repoDocs?.includes("#### Relevant Excerpts"));
 
   const batches = batchContextPackages(contextPackages, extras);
-  log.info({ reviewId, batchCount: batches.length, totalFiles: contextPackages.length }, "Context batched for agents");
+  log.info(
+    {
+      reviewId,
+      batchCount: batches.length,
+      totalFiles: contextPackages.length,
+      hasRepoDocsContext,
+      hasRepoDocsExcerpts,
+    },
+    "Context batched for agents",
+  );
 
   const allFindings: Finding[] = [];
   const allTraces: AgentTrace[] = [];
@@ -1380,6 +1451,7 @@ async function runAgents(
 
     const contextText = batch.map((pkg) => formatContextText(pkg, extras)).join("\n---\n\n");
     const batchLabel = batches.length > 1 ? ` (batch ${batchIdx + 1}/${batches.length})` : "";
+    const repoDocsText = extras?.repoDocs ? `\n\n### Repo Docs\n${extras.repoDocs}\n` : "";
     const prompt = `Review the following code changes and provide your findings.${batchLabel}
 
 **CRITICAL — Line number extraction (MUST FOLLOW):**
@@ -1397,7 +1469,7 @@ Each diff line is prefixed with its line number like this:
 
 Example: If you see "L 123: +db.query(\`SELECT * FROM \${userId}\`)" and find SQL injection:
 → Report: { "file": "...", "line": 123, "lineId": "L123", "lineText": "+db.query(...)", ... }
-
+${repoDocsText}
 ${contextText}`;
 
     type AgentTask = { name: string; promise: Promise<{ findings: Finding[]; trace: AgentTrace }> };
@@ -1408,7 +1480,10 @@ ${contextText}`;
     // Security agent - always runs unless LLM is completely down or skipped
     if (!degradation.slowLlm && !options.skipSecurity) {
       await assertNotCancelled(cancelKey, "Review cancelled");
-      agentTasks.push({ name: "security", promise: runSingleAgentWithTrace("security", reviewId, prompt, repoContext) });
+      agentTasks.push({
+        name: "security",
+        promise: runSingleAgentWithTrace("security", reviewId, prompt, repoContext, { hasRepoDocsContext, hasRepoDocsExcerpts }),
+      });
       runningAgents.push("security");
     } else if (batchIdx === 0) {
       batchTraces.push(buildSkippedTrace("security"));
@@ -1417,7 +1492,10 @@ ${contextText}`;
     // Logic agent - always runs unless LLM is completely down
     if (!degradation.slowLlm) {
       await assertNotCancelled(cancelKey, "Review cancelled");
-      agentTasks.push({ name: "logic", promise: runSingleAgentWithTrace("logic", reviewId, prompt, repoContext) });
+      agentTasks.push({
+        name: "logic",
+        promise: runSingleAgentWithTrace("logic", reviewId, prompt, repoContext, { hasRepoDocsContext, hasRepoDocsExcerpts }),
+      });
       runningAgents.push("logic");
     } else if (batchIdx === 0) {
       batchTraces.push(buildSkippedTrace("logic"));
@@ -1431,7 +1509,10 @@ ${contextText}`;
       if (batchIdx === 0) {
         log.info({ reviewId, hasEmbeddings, agentId: duplicationAgentId }, "Running duplication agent");
       }
-      agentTasks.push({ name: "duplication", promise: runSingleAgentWithTrace(duplicationAgentId, reviewId, prompt, repoContext) });
+      agentTasks.push({
+        name: "duplication",
+        promise: runSingleAgentWithTrace(duplicationAgentId, reviewId, prompt, repoContext, { hasRepoDocsContext, hasRepoDocsExcerpts }),
+      });
       runningAgents.push("duplication");
     } else if (batchIdx === 0) {
       if (options.skipDuplication) {
@@ -1443,7 +1524,10 @@ ${contextText}`;
     // API change agent - benefits from graph but can work without
     if (!degradation.slowLlm && !degradation.noGraph) {
       await assertNotCancelled(cancelKey, "Review cancelled");
-      agentTasks.push({ name: "api-change", promise: runSingleAgentWithTrace("api-change", reviewId, prompt, repoContext) });
+      agentTasks.push({
+        name: "api-change",
+        promise: runSingleAgentWithTrace("api-change", reviewId, prompt, repoContext, { hasRepoDocsContext, hasRepoDocsExcerpts }),
+      });
       runningAgents.push("api-change");
     } else if (batchIdx === 0) {
       if (degradation.noGraph) {
@@ -1455,7 +1539,10 @@ ${contextText}`;
     // Refactor agent - always runs
     if (!degradation.slowLlm) {
       await assertNotCancelled(cancelKey, "Review cancelled");
-      agentTasks.push({ name: "refactor", promise: runSingleAgentWithTrace("refactor", reviewId, prompt, repoContext) });
+      agentTasks.push({
+        name: "refactor",
+        promise: runSingleAgentWithTrace("refactor", reviewId, prompt, repoContext, { hasRepoDocsContext, hasRepoDocsExcerpts }),
+      });
       runningAgents.push("refactor");
     } else if (batchIdx === 0) {
       batchTraces.push(buildSkippedTrace("refactor"));
@@ -1464,7 +1551,10 @@ ${contextText}`;
     // Completeness agent - finds MISSING controls (CSRF, rate limiting, validation)
     if (!degradation.slowLlm) {
       await assertNotCancelled(cancelKey, "Review cancelled");
-      agentTasks.push({ name: "completeness", promise: runSingleAgentWithTrace("completeness", reviewId, prompt, repoContext) });
+      agentTasks.push({
+        name: "completeness",
+        promise: runSingleAgentWithTrace("completeness", reviewId, prompt, repoContext, { hasRepoDocsContext, hasRepoDocsExcerpts }),
+      });
       runningAgents.push("completeness");
     } else if (batchIdx === 0) {
       batchTraces.push(buildSkippedTrace("completeness"));
@@ -1535,6 +1625,60 @@ ${contextText}`;
   return { findings: allFindings, traces: allTraces };
 }
 
+/**
+ * Extract usage metrics (tokens, cost, generationId) from an agent result.
+ * Shared by all agent call sites to avoid duplicating cost-extraction logic.
+ */
+function extractUsageFromResult(
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  result: any,
+): { inputTokens: number; outputTokens: number; costUsd: number; generationId?: string } {
+  const usage = (result as Record<string, unknown>).usage as Record<string, unknown> | undefined;
+  const inputTokens = typeof usage?.promptTokens === "number" ? usage.promptTokens : 0;
+  const outputTokens = typeof usage?.completionTokens === "number" ? usage.completionTokens : 0;
+  const directCost = typeof usage?.cost === "number" ? usage.cost : null;
+  const generationId = result.response?.id;
+  return {
+    inputTokens,
+    outputTokens,
+    costUsd: directCost ?? 0,
+    generationId: generationId || undefined,
+  };
+}
+
+/**
+ * Extract tool usage from agent execution steps.
+ * The AI SDK result exposes `steps`, each with `toolCalls` arrays.
+ * Defensively checks both direct properties and payload wrappers
+ * to handle AI SDK vs Mastra wrapping differences.
+ */
+function extractToolUsageFromResult(
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  result: any,
+): ToolUsageSummary {
+  const byTool: Record<string, number> = {};
+  let totalCalls = 0;
+
+  const steps = result?.steps;
+  if (!Array.isArray(steps)) {
+    return { totalCalls: 0, byTool };
+  }
+
+  for (const step of steps) {
+    const toolCalls = step?.toolCalls;
+    if (!Array.isArray(toolCalls)) continue;
+
+    for (const call of toolCalls) {
+      // AI SDK uses call.toolName; Mastra chunk wrapper uses call.payload.toolName
+      const toolName: string = call?.toolName ?? call?.payload?.toolName ?? "unknown";
+      byTool[toolName] = (byTool[toolName] ?? 0) + 1;
+      totalCalls++;
+    }
+  }
+
+  return { totalCalls, byTool };
+}
+
 function buildSkippedTrace(agent: string): AgentTrace {
   const now = new Date().toISOString();
   return {
@@ -1558,9 +1702,10 @@ async function runSingleAgentWithTrace(
   reviewId: string,
   prompt: string,
   repoContext: { repoId: string; repoPath: string },
+  promptContext?: { hasRepoDocsContext: boolean; hasRepoDocsExcerpts: boolean },
 ): Promise<{ findings: Finding[]; trace: AgentTrace }> {
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  const agents: Record<string, { generate: (prompt: string) => Promise<any> }> = {
+  const agents: Record<string, { generate: (prompt: string, options?: any) => Promise<any> }> = {
     "security": securityAgent,
     "logic": logicAgent,
     "duplication": duplicationAgent,
@@ -1577,32 +1722,42 @@ async function runSingleAgentWithTrace(
   }
 
   const startedAt = new Date();
-  log.debug({ reviewId, agent: agentName }, "Running agent");
+  log.info(
+    {
+      reviewId,
+      agent: agentName,
+      docsContextIncluded: promptContext?.hasRepoDocsContext ?? false,
+      docsExcerptsIncluded: promptContext?.hasRepoDocsExcerpts ?? false,
+    },
+    "Running agent with prompt context",
+  );
 
   try {
     const result = await openRouterBreaker.execute(async () => {
-      return runWithRepoContext(repoContext, () => agent.generate(prompt));
+      return runWithRepoContext(repoContext, () => agent.generate(prompt, { tracingOptions: { metadata: { reviewId } } }));
     });
 
     const completedAt = new Date();
     const text = typeof result.text === "string" ? result.text : "";
-    const findings = parseFindingsFromResponse(text, agentName);
+    const allFindings = parseFindingsFromResponse(text, agentName);
+    const usage = extractUsageFromResult(result);
+    const toolUsage = extractToolUsageFromResult(result);
 
-    // Extract usage data from response
-    const usage = (result as Record<string, unknown>).usage as Record<string, unknown> | undefined;
-    const inputTokens = typeof usage?.promptTokens === "number" ? usage.promptTokens : 0;
-    const outputTokens = typeof usage?.completionTokens === "number" ? usage.completionTokens : 0;
+    // Confidence gate: drop low-confidence findings that lack investigation trail
+    const findings = allFindings.filter(f => {
+      if (f.confidence < 0.7 && !f.investigation) {
+        log.warn(
+          { reviewId, agent: agentName, title: f.title, confidence: f.confidence },
+          "Dropping low-confidence finding without investigation trail",
+        );
+        return false;
+      }
+      return true;
+    });
 
-    // Try to get cost directly from usage object (OpenRouter includes this in responses)
-    // Fall back to generation endpoint if not available
-    const directCost = typeof usage?.cost === "number" ? usage.cost : null;
-    const generationId = result.response?.id;
-    const costUsd = directCost ?? (generationId ? (await fetchOpenRouterCostUsd(generationId)) ?? 0 : 0);
-
-    // Debug log to verify cost retrieval method
-    log.debug(
-      { reviewId, agent: agentName, directCost, generationId, costUsd },
-      "Agent cost tracking",
+    log.info(
+      { reviewId, agent: agentName, toolsUsed: toolUsage.totalCalls, byTool: toolUsage.byTool, ...usage },
+      "Agent execution complete",
     );
 
     return {
@@ -1612,11 +1767,10 @@ async function runSingleAgentWithTrace(
         startedAt: startedAt.toISOString(),
         completedAt: completedAt.toISOString(),
         durationMs: completedAt.getTime() - startedAt.getTime(),
-        inputTokens,
-        outputTokens,
-        costUsd,
+        ...usage,
         findingsCount: findings.length,
         status: "success",
+        toolUsage,
       },
     };
   } catch (error) {
@@ -1710,6 +1864,23 @@ function parseFindingsFromResponse(text: string, agentName: string): Finding[] {
         ? (rawCategory as Category)
         : (AGENT_DEFAULT_CATEGORY[agentName] ?? "bug");
 
+      // Extract optional investigation trail
+      const rawInvestigation = f.investigation as Record<string, unknown> | undefined;
+      const investigation = rawInvestigation
+        ? {
+            toolsUsed: Array.isArray(rawInvestigation.toolsUsed)
+              ? (rawInvestigation.toolsUsed as unknown[]).filter((v): v is string => typeof v === "string")
+              : [],
+            filesChecked: Array.isArray(rawInvestigation.filesChecked)
+              ? (rawInvestigation.filesChecked as unknown[]).filter((v): v is string => typeof v === "string")
+              : [],
+            patternsSearched: Array.isArray(rawInvestigation.patternsSearched)
+              ? (rawInvestigation.patternsSearched as unknown[]).filter((v): v is string => typeof v === "string")
+              : [],
+            conclusion: typeof rawInvestigation.conclusion === "string" ? rawInvestigation.conclusion : "",
+          }
+        : undefined;
+
       findings.push({
         file: String(f.file ?? ""),
         line,
@@ -1740,6 +1911,7 @@ function parseFindingsFromResponse(text: string, agentName: string): Finding[] {
                 usage: String(a.usage ?? ""),
               }))
           : undefined,
+        investigation,
       });
     }
 
@@ -1790,6 +1962,7 @@ interface VerificationResult {
   verifiedFindings: Finding[];
   disprovenFindings: Finding[];
   disprovenCount: number;
+  traces: AgentTrace[];
 }
 
 /**
@@ -1813,10 +1986,13 @@ async function runVerificationPhase(
 
   const verifiedFindings: Finding[] = [];
   const disprovenFindings: Finding[] = [];
+  const batchTraces: AgentTrace[] = [];
   let disprovenCount = 0;
 
-  for (const batch of batches) {
+  for (let batchIdx = 0; batchIdx < batches.length; batchIdx++) {
+    const batch = batches[batchIdx]!;
     await assertNotCancelled(cancelKey, "Review cancelled");
+    const startedAt = new Date();
 
     const prompt = `
 You are verifying the following findings from a code review.
@@ -1858,26 +2034,52 @@ Return format:
 
     try {
       const result = await openRouterBreaker.execute(async () => {
-        return runWithRepoContext(repoContext, () => verificationAgent.generate(prompt));
+        return runWithRepoContext(repoContext, () => verificationAgent.generate(prompt, { tracingOptions: { metadata: { reviewId } } }));
       });
+      const completedAt = new Date();
 
       const text = typeof result.text === "string" ? result.text : "";
       const parsed = parseVerificationResponse(text, batch);
+      const usage = extractUsageFromResult(result);
 
       verifiedFindings.push(...parsed.verified);
       disprovenFindings.push(...parsed.disproven);
       disprovenCount += parsed.disprovenCount;
+
+      batchTraces.push({
+        agent: batches.length > 1 ? `verification-${batchIdx + 1}` : "verification",
+        startedAt: startedAt.toISOString(),
+        completedAt: completedAt.toISOString(),
+        durationMs: completedAt.getTime() - startedAt.getTime(),
+        ...usage,
+        findingsCount: parsed.verified.length + parsed.disproven.length,
+        status: "success",
+      });
     } catch (error) {
+      const completedAt = new Date();
       log.warn(
         { reviewId, error: error instanceof Error ? error.message : String(error) },
         "Verification batch failed, keeping original findings",
       );
       // If verification fails, keep original findings
       verifiedFindings.push(...batch);
+
+      batchTraces.push({
+        agent: batches.length > 1 ? `verification-${batchIdx + 1}` : "verification",
+        startedAt: startedAt.toISOString(),
+        completedAt: completedAt.toISOString(),
+        durationMs: completedAt.getTime() - startedAt.getTime(),
+        inputTokens: 0,
+        outputTokens: 0,
+        costUsd: 0,
+        findingsCount: 0,
+        status: "failed",
+        error: error instanceof Error ? error.message : String(error),
+      });
     }
   }
 
-  return { verifiedFindings, disprovenFindings, disprovenCount };
+  return { verifiedFindings, disprovenFindings, disprovenCount, traces: batchTraces };
 }
 
 /**
@@ -1991,7 +2193,7 @@ async function synthesizeFindings(
   prTitle?: string,
   prDescription?: string,
   diffFilesMeta?: { path: string; status: string; additions: number; deletions: number }[],
-): Promise<SynthesisOutput> {
+): Promise<SynthesisOutput & { trace?: AgentTrace }> {
   if (findings.length === 0) return { findings: [], confidenceScore: 5 };
 
   // If LLM is degraded, skip synthesis and return raw findings
@@ -2000,6 +2202,7 @@ async function synthesizeFindings(
     return { findings };
   }
 
+  const startedAt = new Date();
   try {
     const promptParts: string[] = [];
 
@@ -2027,17 +2230,44 @@ async function synthesizeFindings(
     const prompt = promptParts.join("\n");
 
     const result = await openRouterBreaker.execute(async () => {
-      const response = await synthesisAgent.generate(prompt);
+      const response = await synthesisAgent.generate(prompt, { tracingOptions: { metadata: { reviewId } } });
       return response;
     });
+    const completedAt = new Date();
+    const usage = extractUsageFromResult(result);
+
+    const trace: AgentTrace = {
+      agent: "synthesis",
+      startedAt: startedAt.toISOString(),
+      completedAt: completedAt.toISOString(),
+      durationMs: completedAt.getTime() - startedAt.getTime(),
+      ...usage,
+      findingsCount: 0,
+      status: "success",
+    };
 
     const text = typeof result.text === "string" ? result.text : "";
     const synthesized = parseSynthesisOutput(text);
-    if (synthesized && synthesized.findings.length > 0) return synthesized;
-    return { findings };
+    if (synthesized && synthesized.findings.length > 0) return { ...synthesized, trace };
+    return { findings, trace };
   } catch (error) {
+    const completedAt = new Date();
     log.warn({ reviewId, error }, "Synthesis failed, returning raw findings");
-    return { findings };
+    return {
+      findings,
+      trace: {
+        agent: "synthesis",
+        startedAt: startedAt.toISOString(),
+        completedAt: completedAt.toISOString(),
+        durationMs: completedAt.getTime() - startedAt.getTime(),
+        inputTokens: 0,
+        outputTokens: 0,
+        costUsd: 0,
+        findingsCount: 0,
+        status: "failed",
+        error: error instanceof Error ? error.message : String(error),
+      },
+    };
   }
 }
 
@@ -2120,6 +2350,62 @@ function parseSynthesisOutput(text: string): SynthesisOutput | null {
   } catch (error) {
     log.warn({ error }, "Failed to parse synthesis output");
     return null;
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Background cost verification
+// ---------------------------------------------------------------------------
+
+/**
+ * Fire-and-forget: re-fetches costs from OpenRouter for all traces with a
+ * generationId and updates the stored review result in Redis if any cost changed.
+ */
+async function verifyCostsInBackground(reviewId: string, traces: AgentTrace[]): Promise<void> {
+  try {
+    // Wait for OpenRouter to index generation stats
+    await Bun.sleep(3000);
+
+    const tracesWithGenId = traces.filter((t) => t.generationId);
+    if (tracesWithGenId.length === 0) return;
+
+    let anyChanged = false;
+    for (const trace of tracesWithGenId) {
+      const freshCost = await fetchOpenRouterCostUsd(trace.generationId!);
+      if (freshCost !== null && freshCost !== trace.costUsd) {
+        log.info(
+          { reviewId, agent: trace.agent, oldCost: trace.costUsd, newCost: freshCost },
+          "Cost updated from OpenRouter verification",
+        );
+        trace.costUsd = freshCost;
+        anyChanged = true;
+      }
+    }
+
+    if (!anyChanged) return;
+
+    // Re-read stored result, apply updated trace costs, and re-save
+    const raw = await redis.get(`review:result:${reviewId}`);
+    if (!raw) return;
+    const result = JSON.parse(raw) as ReviewResult;
+
+    for (const updatedTrace of tracesWithGenId) {
+      const stored = result.traces?.find(
+        (t) => t.agent === updatedTrace.agent && t.generationId === updatedTrace.generationId,
+      );
+      if (stored) stored.costUsd = updatedTrace.costUsd;
+    }
+
+    const newTotalCost = (result.traces ?? []).reduce((sum, t) => sum + t.costUsd, 0);
+    result.summary.costUsd = newTotalCost;
+
+    await redis.set(`review:result:${reviewId}`, JSON.stringify(result));
+    log.info({ reviewId, newTotalCost }, "Review cost verified and updated from OpenRouter");
+  } catch (error) {
+    log.warn(
+      { reviewId, error: error instanceof Error ? error.message : String(error) },
+      "Background cost verification failed (non-fatal)",
+    );
   }
 }
 

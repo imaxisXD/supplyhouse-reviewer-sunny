@@ -116,6 +116,34 @@ Many reported vulnerabilities are false positives because:
 - The call chain doesn't actually connect to user input
 - Validation exists at a higher level (middleware, parent function)
 
+## Specific Disproval Protocols
+
+### CSRF Missing Findings — Specific Protocol
+1. Identify the HTTP client: grep_codebase("axios|fetch|jQuery.ajax|\\\\.post\\\\(|\\\\.delete\\\\(")
+2. If axios: read_file on the axios library/config → check for xsrfCookieName/xsrfHeaderName
+3. If the library auto-handles CSRF → DISPROVE with evidence: "axios auto-sends XSRF-TOKEN on state-changing requests"
+4. If fetch/custom client: grep_codebase for request interceptors adding CSRF headers
+5. Check middleware: grep_codebase("csrf|csurf|CSRFProtection") for server-side middleware
+
+### Structural / Missing Tag Findings — Specific Protocol
+1. read_file the ACTUAL file (NOT just rely on the diff)
+2. Check for the tag/element in the COMPLETE file content
+3. Tag exists in final file → DISPROVE: "Tag exists at line X in the complete file. Diff only showed removal of nearby whitespace/content."
+4. Tag genuinely missing → VERIFY
+
+### innerHTML / XSS Findings — Specific Protocol
+1. Use trace_data_flow on the variable assigned to innerHTML
+2. Trace the full chain: Where does the HTML come from?
+3. If source is fetch(same-origin URL) + DOMParser → This is a server HTML self-refresh pattern → DISPROVE
+4. If source is user input (form field, URL param, etc.) with no sanitization → VERIFY
+5. Check if the server template uses auto-escaping (FreeMarker ?html, React JSX, Jinja2 autoescape)
+
+### CSS / Syntax Bug Findings — Verification Protocol
+1. read_file on the actual CSS/template file
+2. Check if the reported syntax issue exists in the final file
+3. For CSS vendor prefix issues: verify the property name is actually invalid (e.g. \`webkit-\` vs \`-webkit-\`)
+4. Verify severity is appropriate: syntax bugs that break functionality should be at least MEDIUM
+
 ## How to Verify Different Finding Types
 
 ### XSS Claims

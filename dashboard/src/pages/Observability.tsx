@@ -1,6 +1,6 @@
 import { Fragment, useEffect, useState } from "react";
 import { Link } from "react-router-dom";
-import { getMetrics, getReviewsList, getHealth, getReviewResult } from "../api/client";
+import { getMetrics, getReviewsList, getHealth, getReviewResult, refreshCosts } from "../api/client";
 import type { Metrics, ReviewListItem, AgentTrace } from "../api/client";
 import { advanceJourneyStep } from "../journey";
 import MastraTraceViewer from "../components/MastraTraceViewer";
@@ -26,6 +26,7 @@ export default function Observability() {
   const [expandedReview, setExpandedReview] = useState<string | null>(null);
   const [traces, setTraces] = useState<AgentTrace[]>([]);
   const [tracesLoading, setTracesLoading] = useState(false);
+  const [refreshing, setRefreshing] = useState(false);
 
   useEffect(() => {
     void advanceJourneyStep("explore");
@@ -53,6 +54,25 @@ export default function Observability() {
       setTraces([]);
     } finally {
       setTracesLoading(false);
+    }
+  };
+
+  const handleRefreshCosts = async () => {
+    setRefreshing(true);
+    try {
+      const updated = await refreshCosts();
+      setMetrics({
+        totalReviews: updated.totalReviews,
+        totalFindings: updated.totalFindings,
+        avgDurationMs: updated.avgDurationMs,
+        totalCostUsd: updated.totalCostUsd,
+        severityCounts: updated.severityCounts,
+        circuitBreakers: updated.circuitBreakers,
+      });
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Failed to refresh costs");
+    } finally {
+      setRefreshing(false);
     }
   };
 
@@ -122,7 +142,17 @@ export default function Observability() {
           <div className={statValueClass}>{(metrics.avgDurationMs / 1000).toFixed(1)}s</div>
         </div>
         <div className={statCardClass}>
-          <div className={statLabelClass}>Total Cost</div>
+          <div className="flex items-center justify-between">
+            <div className={statLabelClass}>Total Cost</div>
+            <button
+              onClick={handleRefreshCosts}
+              disabled={refreshing}
+              className="text-[10px] px-2 py-0.5 border border-ink-900 text-ink-600 hover:bg-warm-100 transition disabled:opacity-50 disabled:cursor-not-allowed"
+              title="Re-fetch costs from OpenRouter"
+            >
+              {refreshing ? "Refreshing..." : "Refresh"}
+            </button>
+          </div>
           <div className={`${statValueClass} text-emerald-600`}>${metrics.totalCostUsd.toFixed(4)}</div>
         </div>
       </div>

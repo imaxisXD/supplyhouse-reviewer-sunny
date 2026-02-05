@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef, useMemo, useCallback, type FormEvent } from "react";
+import { useState, useEffect, useRef, useMemo, useCallback, startTransition, type FormEvent } from "react";
 import { useParams, Link } from "react-router-dom";
 import ForceGraph3D from "react-force-graph-3d";
 import type { ForceGraphMethods } from "react-force-graph-3d";
@@ -10,6 +10,7 @@ import GraphLegend, {
   EDGE_COLORS,
   NODE_SIZES,
 } from "../components/GraphLegend";
+import NodeDetailPanel from "../components/NodeDetailPanel";
 import { advanceJourneyStep } from "../journey";
 
 // Extended node type with force-graph positional data
@@ -26,7 +27,11 @@ interface IndexJobState {
   error?: string;
 }
 
-// Glow sprite texture (cached)
+// ─── Shared GPU resource pools (R3F pattern: reuse geometry & materials) ───
+// Instead of creating N geometries + N materials (one per node), we share
+// instances from small pools.  This drops draw-call overhead dramatically.
+
+// Glow sprite texture (singleton)
 let _glowTexture: THREE.Texture | null = null;
 function getGlowTexture(): THREE.Texture {
   if (_glowTexture) return _glowTexture;
@@ -45,16 +50,57 @@ function getGlowTexture(): THREE.Texture {
   return _glowTexture;
 }
 
-// Dispose all GPU resources in a Three.js group
+// Shared SphereGeometry pool – keyed by "quantizedSize_segments"
+const _geometryPool = new Map<string, THREE.SphereGeometry>();
+function getSharedGeometry(rawSize: number, segments: number): THREE.SphereGeometry {
+  const size = Math.round(rawSize * 2) / 2; // quantize to 0.5 steps
+  const key = `${size}_${segments}`;
+  let geom = _geometryPool.get(key);
+  if (!geom) {
+    geom = new THREE.SphereGeometry(size, segments, segments);
+    _geometryPool.set(key, geom);
+  }
+  return geom;
+}
+
+// Shared MeshLambertMaterial pool – keyed by color hex (3 total: File/Function/Class)
+const _materialPool = new Map<string, THREE.MeshLambertMaterial>();
+function getSharedMaterial(color: string): THREE.MeshLambertMaterial {
+  let mat = _materialPool.get(color);
+  if (!mat) {
+    mat = new THREE.MeshLambertMaterial({ color, transparent: true, opacity: 0.92 });
+    _materialPool.set(color, mat);
+  }
+  return mat;
+}
+
+// Shared SpriteMaterial pool – keyed by color hex (3 total)
+const _spriteMaterialPool = new Map<string, THREE.SpriteMaterial>();
+function getSharedSpriteMaterial(color: string): THREE.SpriteMaterial {
+  let mat = _spriteMaterialPool.get(color);
+  if (!mat) {
+    mat = new THREE.SpriteMaterial({
+      map: getGlowTexture(),
+      color,
+      transparent: true,
+      opacity: 0.35,
+      blending: THREE.AdditiveBlending,
+      depthWrite: false,
+    });
+    _spriteMaterialPool.set(color, mat);
+  }
+  return mat;
+}
+
+// Dispose only per-node GPU resources (highlight rings), NOT shared pool entries.
+// Shared geometries/materials persist across graph loads — they're tiny (< 30 total).
 function disposeGroup(group: THREE.Group) {
   group.traverse((child) => {
-    if (child instanceof THREE.Mesh) {
+    if (child instanceof THREE.Mesh && child.userData?.isHighlightRing) {
       child.geometry.dispose();
       const mat = child.material;
       if (Array.isArray(mat)) mat.forEach((m) => m.dispose());
       else mat.dispose();
-    } else if (child instanceof THREE.Sprite) {
-      child.material.dispose();
     }
   });
 }
@@ -117,6 +163,8 @@ export default function RepoGraph() {
   // Cache Three.js node objects to prevent mass re-creation on hover
   const nodeObjectsRef = useRef<Map<string, THREE.Group>>(new Map());
   const prevHighlightRef = useRef<Set<string>>(new Set());
+  const dprRef = useRef(typeof window !== "undefined" ? window.devicePixelRatio : 1);
+  const dprTimerRef = useRef<ReturnType<typeof setTimeout>>();
 
   const graphInset = useMemo(() => {
     if (dimensions.width < 900) return 12;
@@ -232,6 +280,7 @@ export default function RepoGraph() {
         disposeGroup(group);
       }
       nodeObjectsRef.current.clear();
+      clearTimeout(dprTimerRef.current);
     };
   }, []);
 
@@ -408,28 +457,29 @@ export default function RepoGraph() {
   }, [searchQuery, renderData]);
 
   const adjacency = useMemo(() => {
-    const map = new Map<string, { nodeIds: Set<string>; linkKeys: Set<string> }>();
-    if (!enableHighlight) return map;
+    const map = new Map<string, { nodeIds: Set<string>; linkKeys: Set<string>; links: { link: FGLink; direction: "outgoing" | "incoming" }[] }>();
     for (const link of renderData.links) {
       const srcId = typeof link.source === "object" ? link.source.id : link.source;
       const tgtId = typeof link.target === "object" ? link.target.id : link.target;
       if (!srcId || !tgtId) continue;
       const key = `${srcId}-${tgtId}`;
 
-      const srcEntry = map.get(srcId) ?? { nodeIds: new Set<string>(), linkKeys: new Set<string>() };
+      const srcEntry = map.get(srcId) ?? { nodeIds: new Set<string>(), linkKeys: new Set<string>(), links: [] };
       srcEntry.nodeIds.add(srcId);
       srcEntry.nodeIds.add(tgtId);
       srcEntry.linkKeys.add(key);
+      srcEntry.links.push({ link, direction: "outgoing" });
       map.set(srcId, srcEntry);
 
-      const tgtEntry = map.get(tgtId) ?? { nodeIds: new Set<string>(), linkKeys: new Set<string>() };
+      const tgtEntry = map.get(tgtId) ?? { nodeIds: new Set<string>(), linkKeys: new Set<string>(), links: [] };
       tgtEntry.nodeIds.add(tgtId);
       tgtEntry.nodeIds.add(srcId);
       tgtEntry.linkKeys.add(key);
+      tgtEntry.links.push({ link, direction: "incoming" });
       map.set(tgtId, tgtEntry);
     }
     return map;
-  }, [renderData, enableHighlight]);
+  }, [renderData]);
 
   // Connected node/link IDs for highlighting
   const highlightSet = useMemo(() => {
@@ -451,6 +501,28 @@ export default function RepoGraph() {
     return new Set(renderData.nodes.map((n) => n.id));
   }, [renderData]);
 
+  const nodeById = useMemo(() => {
+    const map = new Map<string, FGNode>();
+    for (const n of renderData.nodes) map.set(n.id, n);
+    return map;
+  }, [renderData]);
+
+  const selectedNodeConnections = useMemo(() => {
+    if (!selectedNode) return [];
+    const entry = adjacency.get(selectedNode.id);
+    if (!entry) return [];
+    return entry.links
+      .map(({ link, direction }) => {
+        const srcId = typeof link.source === "object" ? link.source.id : link.source;
+        const tgtId = typeof link.target === "object" ? link.target.id : link.target;
+        const connectedId = direction === "outgoing" ? tgtId : srcId;
+        const connectedNode = connectedId ? nodeById.get(connectedId) : undefined;
+        if (!connectedNode) return null;
+        return { link, direction, connectedNode };
+      })
+      .filter((x): x is NonNullable<typeof x> => x !== null);
+  }, [selectedNode, adjacency, nodeById]);
+
   useEffect(() => {
     if (selectedNode && !renderNodeIdSet.has(selectedNode.id)) {
       setSelectedNode(null);
@@ -461,6 +533,7 @@ export default function RepoGraph() {
   }, [renderNodeIdSet, selectedNode, hoveredNode]);
 
   // Node custom object: sphere + glow sprite (STABLE - no highlight dependency)
+  // Uses shared geometry/material pools to avoid per-node GPU allocations.
   // Highlight rings are managed separately via useEffect to avoid rebuilding
   // all Three.js objects on every hover (which causes a severe memory leak).
   const nodeThreeObject = useCallback(
@@ -477,26 +550,15 @@ export default function RepoGraph() {
       const group = new THREE.Group();
       group.userData = { nodeId: node.id, size };
 
-      // Core sphere
-      const geometry = new THREE.SphereGeometry(size, 16, 16);
-      const material = new THREE.MeshLambertMaterial({
-        color,
-        transparent: true,
-        opacity: 0.92,
-      });
+      // Core sphere – shared geometry & material (reduces ~N allocations to ~30)
+      const segments = 12; // was 16 – 44% fewer triangles, visually identical
+      const geometry = getSharedGeometry(size, segments);
+      const material = getSharedMaterial(color);
       const sphere = new THREE.Mesh(geometry, material);
       group.add(sphere);
 
-      // Glow sprite
-      const spriteMaterial = new THREE.SpriteMaterial({
-        map: getGlowTexture(),
-        color,
-        transparent: true,
-        opacity: 0.35,
-        blending: THREE.AdditiveBlending,
-        depthWrite: false,
-      });
-      const sprite = new THREE.Sprite(spriteMaterial);
+      // Glow sprite – shared material per color
+      const sprite = new THREE.Sprite(getSharedSpriteMaterial(color));
       sprite.scale.set(size * 5, size * 5, 1);
       group.add(sprite);
 
@@ -573,7 +635,7 @@ export default function RepoGraph() {
     if (node.params) lines.push(`<span style="color:#9ca3af">Params: ${node.params}</span>`);
     if (node.returnType) lines.push(`<span style="color:#9ca3af">Returns: ${node.returnType}</span>`);
     if (node.extendsName) lines.push(`<span style="color:#fca5a5">extends ${node.extendsName}</span>`);
-    return `<div style="background:rgba(3,7,18,0.92);padding:8px 12px;border-radius:8px;border:1px solid rgba(255,255,255,0.1);font-size:11px;line-height:1.6;font-family:ui-monospace,monospace;max-width:320px;pointer-events:none">${lines.join("<br/>")}</div>`;
+    return `<div style="background:rgba(3,7,18,0.92);padding:8px 12px;border-radius:8px;border:1px solid rgba(255,255,255,0.1);font-size:11px;line-height:1.6;font-family:ui-monospace,monospace;max-width:min(80vw,600px);width:max-content;pointer-events:none">${lines.join("<br/>")}</div>`;
   }, []);
 
   const simpleNodeColor = useCallback((node: FGNode) => {
@@ -588,6 +650,21 @@ export default function RepoGraph() {
     return baseSize * scale + Math.min(connections * 0.25, 6);
   }, [isLargeGraph]);
 
+  // Movement regression: lower DPR during camera animation, restore after
+  const regressDpr = useCallback((durationMs: number) => {
+    const fg = fgRef.current;
+    if (!fg) return;
+    try {
+      const renderer = (fg as any).renderer?.() as THREE.WebGLRenderer | undefined;
+      if (!renderer) return;
+      clearTimeout(dprTimerRef.current);
+      renderer.setPixelRatio(Math.min(dprRef.current, 1)); // drop to max 1× during motion
+      dprTimerRef.current = setTimeout(() => {
+        renderer.setPixelRatio(dprRef.current);
+      }, durationMs + 100);
+    } catch { /* renderer may not be accessible */ }
+  }, []);
+
   // Click: zoom to node
   const handleNodeClick = useCallback(
     (node: FGNode) => {
@@ -595,6 +672,7 @@ export default function RepoGraph() {
       if (node.x != null && node.y != null && node.z != null && fgRef.current) {
         const distance = 180;
         const distRatio = 1 + distance / (Math.hypot(node.x, node.y, node.z) || 1);
+        regressDpr(1000);
         fgRef.current.cameraPosition(
           { x: node.x * distRatio, y: node.y * distRatio, z: node.z * distRatio },
           { x: node.x, y: node.y, z: node.z },
@@ -602,7 +680,7 @@ export default function RepoGraph() {
         );
       }
     },
-    [],
+    [regressDpr],
   );
 
   const handleNodeHover = useCallback(
@@ -616,6 +694,23 @@ export default function RepoGraph() {
   const handleBackgroundClick = useCallback(() => {
     setSelectedNode(null);
   }, []);
+
+  const handleNavigateToNode = useCallback(
+    (node: FGNode) => {
+      setSelectedNode(node);
+      if (node.x != null && node.y != null && node.z != null && fgRef.current) {
+        const distance = 180;
+        const distRatio = 1 + distance / (Math.hypot(node.x, node.y, node.z) || 1);
+        regressDpr(1000);
+        fgRef.current.cameraPosition(
+          { x: node.x * distRatio, y: node.y * distRatio, z: node.z * distRatio },
+          { x: node.x, y: node.y, z: node.z },
+          1000,
+        );
+      }
+    },
+    [regressDpr],
+  );
 
   const buildReindexToken = useCallback(() => {
     const trimmedEmail = reindexEmail.trim();
@@ -749,6 +844,33 @@ export default function RepoGraph() {
     [enableHighlight, highlightSet, selectedNode, hoveredNode],
   );
 
+  // Edge tooltip on hover
+  const linkLabel = useCallback(
+    (link: FGLink) => {
+      const srcNode = typeof link.source === "object" ? (link.source as FGNode) : nodeById.get(link.source as string);
+      const tgtNode = typeof link.target === "object" ? (link.target as FGNode) : nodeById.get(link.target as string);
+      const edgeColor = EDGE_COLORS[link.type as GraphEdgeType] ?? "#6b7280";
+      const srcName = srcNode?.name ?? "?";
+      const tgtName = tgtNode?.name ?? "?";
+
+      const lines = [
+        `<span style="color:${edgeColor};font-weight:600;text-transform:uppercase;letter-spacing:0.1em">${link.type}</span>`,
+        `<span style="color:#d1d5db">${srcName} → ${tgtName}</span>`,
+      ];
+      if (link.type === "IMPORTS" && link.symbols && link.symbols.length > 0) {
+        lines.push(`<span style="color:#60a5fa">[${link.symbols.join(", ")}]</span>`);
+      }
+      if (link.type === "CALLS" && link.line != null) {
+        lines.push(`<span style="color:#9ca3af">line ${link.line}</span>`);
+      }
+      if (link.weight != null && link.weight > 1) {
+        lines.push(`<span style="color:#9ca3af">weight ${link.weight}</span>`);
+      }
+      return `<div style="background:rgba(3,7,18,0.92);padding:6px 10px;border-radius:6px;border:1px solid rgba(255,255,255,0.1);font-size:10px;line-height:1.6;font-family:ui-monospace,monospace;max-width:min(80vw,600px);width:max-content;pointer-events:none">${lines.join("<br/>")}</div>`;
+    },
+    [nodeById],
+  );
+
   // Node visibility for dimming (keep all visible but opacity handled in threeObject)
   const nodeVisibility = useCallback(() => true, []);
 
@@ -854,6 +976,12 @@ export default function RepoGraph() {
         >
           {reindexIsRunning ? "Re-indexing…" : "Force Re-index"}
         </button>
+        <Link
+          to={`/repo/${encodeURIComponent(decodedRepoId)}/docs`}
+          className="inline-flex items-center gap-2 border border-ink-900 bg-white px-3 py-1.5 text-[10px] font-semibold uppercase tracking-[0.3em] text-ink-700 transition hover:bg-warm-100"
+        >
+          Docs
+        </Link>
         <div className="flex items-center gap-3">
           <Link
             to="/repos"
@@ -1038,10 +1166,14 @@ export default function RepoGraph() {
         nodeFilters={nodeFilters}
         edgeFilters={edgeFilters}
         onToggleNode={(label) =>
-          setNodeFilters((prev) => ({ ...prev, [label]: !prev[label] }))
+          startTransition(() => {
+            setNodeFilters((prev) => ({ ...prev, [label]: !prev[label] }));
+          })
         }
         onToggleEdge={(type) =>
-          setEdgeFilters((prev) => ({ ...prev, [type]: !prev[type] }))
+          startTransition(() => {
+            setEdgeFilters((prev) => ({ ...prev, [type]: !prev[type] }));
+          })
         }
         searchQuery={searchQuery}
         onSearchChange={setSearchQuery}
@@ -1050,123 +1182,81 @@ export default function RepoGraph() {
         stats={stats}
       />
 
-      {/* Selected node detail panel */}
+      {/* Selected node detail panel (right-side slide-in) */}
       {selectedNode && (
-        <div className="absolute bottom-6 left-4 z-10 w-72 bg-white border border-ink-900 p-4">
-          <div className="flex items-start justify-between mb-2">
-            <div className="flex items-center gap-2">
-              <span
-                className="w-2.5 h-2.5 flex-shrink-0"
-                style={{ backgroundColor: NODE_COLORS[selectedNode.label], boxShadow: `0 0 8px ${NODE_COLORS[selectedNode.label]}` }}
-              />
-              <span className="text-[10px] uppercase tracking-wider text-ink-600">
-                {selectedNode.label}
-              </span>
-            </div>
-            <button
-              onClick={() => setSelectedNode(null)}
-              className="text-ink-600 hover:text-ink-900 text-xs transition-colors"
-            >
-              close
-            </button>
-          </div>
-          <p className="text-sm text-ink-900 font-mono truncate mb-2" title={selectedNode.name}>
-            {selectedNode.name}
-          </p>
-          <div className="space-y-1 text-xs text-ink-600 font-mono">
-            {selectedNode.path && (
-              <p className="truncate" title={selectedNode.path}>
-                {selectedNode.path}
-              </p>
-            )}
-            {selectedNode.startLine != null && (
-              <p>
-                L{selectedNode.startLine}
-                {selectedNode.endLine != null && `–${selectedNode.endLine}`}
-              </p>
-            )}
-            {selectedNode.language && <p>{selectedNode.language}</p>}
-            {selectedNode.params && <p>({selectedNode.params})</p>}
-            {selectedNode.returnType && <p>→ {selectedNode.returnType}</p>}
-            {selectedNode.extendsName && (
-              <p className="text-rose-700">extends {selectedNode.extendsName}</p>
-            )}
-            {selectedNode.isExported && <p className="text-emerald-700">exported</p>}
-            {selectedNode.isAsync && <p className="text-sky-700">async</p>}
-            {selectedNode.propertyCount != null && (
-              <p>{selectedNode.propertyCount} properties, {selectedNode.methodCount ?? 0} methods</p>
-            )}
-          </div>
-          <div className="mt-3 pt-2 border-t border-ink-900 text-[10px] text-ink-500">
-            {selectedNode.__connections ?? 0} connections
-          </div>
-        </div>
+        <NodeDetailPanel
+          node={selectedNode}
+          connections={selectedNodeConnections}
+          onClose={() => setSelectedNode(null)}
+          onNavigateToNode={handleNavigateToNode}
+        />
       )}
 
-      {/* 3D Force Graph */}
+      {/* Graph renderer */}
       <div
         className="absolute inset-y-0 flex items-center justify-center"
         style={{ left: graphInset, right: 0 }}
       >
         <ForceGraph3D
-          ref={fgRef}
-          width={graphWidth}
-          height={graphHeight}
-          graphData={renderData}
-          backgroundColor="rgba(0,0,0,0)"
-          showNavInfo={false}
-          onEngineStop={() => {
-            if (hasZoomedRef.current || !fgRef.current) return;
-            // Calculate centroid of all nodes after simulation settles
-            const nodes = renderData.nodes as FGNode[];
-            let cx = 0, cy = 0, cz = 0;
-            let count = 0;
-            for (const node of nodes) {
-              if (node.x != null && node.y != null && node.z != null) {
-                cx += node.x;
-                cy += node.y;
-                cz += node.z;
-                count++;
+            ref={fgRef}
+            width={graphWidth}
+            height={graphHeight}
+            graphData={renderData}
+            backgroundColor="rgba(0,0,0,0)"
+            showNavInfo={false}
+            warmupTicks={isLargeGraph ? 200 : 300}
+            onEngineStop={() => {
+              if (hasZoomedRef.current || !fgRef.current) return;
+              const nodes = renderData.nodes as FGNode[];
+              let cx = 0, cy = 0, cz = 0;
+              let count = 0;
+              for (const node of nodes) {
+                if (node.x != null && node.y != null && node.z != null) {
+                  cx += node.x;
+                  cy += node.y;
+                  cz += node.z;
+                  count++;
+                }
               }
-            }
-            if (count > 0) {
-              cx /= count;
-              cy /= count;
-              cz /= count;
-            }
-            const camDist = Math.max(400, Math.sqrt(nodes.length) * 18);
-            fgRef.current.cameraPosition(
-              { x: cx, y: cy, z: cz + camDist },
-              { x: cx, y: cy, z: cz },
-              800
-            );
-            hasZoomedRef.current = true;
-          }}
-          nodeThreeObject={useCustomNodes ? nodeThreeObject : undefined}
-          nodeThreeObjectExtend={useCustomNodes ? false : undefined}
-          nodeColor={!useCustomNodes ? simpleNodeColor : undefined}
-          nodeVal={!useCustomNodes ? simpleNodeVal : undefined}
-          nodeLabel={enableHighlight ? nodeLabel : undefined}
-          nodeVisibility={nodeVisibility}
-          onNodeClick={handleNodeClick}
-          onNodeHover={enableHighlight ? handleNodeHover : undefined}
-          onBackgroundClick={handleBackgroundClick}
-          linkColor={linkColor}
-          linkWidth={linkWidth}
-          linkOpacity={isLargeGraph ? 0.6 : 0.75}
-          linkDirectionalParticles={enableHighlight ? linkParticles : 0}
-          linkDirectionalParticleWidth={enableHighlight ? 1.5 : 0}
-          linkDirectionalParticleSpeed={enableHighlight ? 0.006 : 0}
-          linkDirectionalParticleColor={enableHighlight ? linkColor : undefined}
-          linkDirectionalArrowLength={enableHighlight ? 3 : 0}
-          linkDirectionalArrowRelPos={enableHighlight ? 1 : 0}
-          linkDirectionalArrowColor={enableHighlight ? linkColor : undefined}
-          enableNodeDrag={!isLargeGraph}
-          enableNavigationControls={true}
-          cooldownTicks={isLargeGraph ? 40 : 200}
-          d3AlphaDecay={isLargeGraph ? 0.07 : 0.02}
-          d3VelocityDecay={isLargeGraph ? 0.5 : 0.3}
-        />
+              if (count > 0) {
+                cx /= count;
+                cy /= count;
+                cz /= count;
+              }
+              const camDist = Math.max(400, Math.sqrt(nodes.length) * 18);
+              fgRef.current.cameraPosition(
+                { x: cx, y: cy, z: cz + camDist },
+                { x: cx, y: cy, z: cz },
+                800
+              );
+              hasZoomedRef.current = true;
+            }}
+            nodeThreeObject={useCustomNodes ? nodeThreeObject : undefined}
+            nodeThreeObjectExtend={useCustomNodes ? false : undefined}
+            nodeColor={!useCustomNodes ? simpleNodeColor : undefined}
+            nodeVal={!useCustomNodes ? simpleNodeVal : undefined}
+            nodeLabel={enableHighlight ? nodeLabel : undefined}
+            nodeVisibility={nodeVisibility}
+            onNodeClick={handleNodeClick}
+            onNodeHover={enableHighlight ? handleNodeHover : undefined}
+            onBackgroundClick={handleBackgroundClick}
+            linkColor={linkColor}
+            linkWidth={linkWidth}
+            linkLabel={linkLabel}
+            linkOpacity={isLargeGraph ? 0.6 : 0.75}
+            linkDirectionalParticles={enableHighlight ? linkParticles : 0}
+            linkDirectionalParticleWidth={enableHighlight ? 1.5 : 0}
+            linkDirectionalParticleSpeed={enableHighlight ? 0.006 : 0}
+            linkDirectionalParticleColor={enableHighlight ? linkColor : undefined}
+            linkDirectionalArrowLength={enableHighlight ? 3 : 0}
+            linkDirectionalArrowRelPos={enableHighlight ? 1 : 0}
+            linkDirectionalArrowColor={enableHighlight ? linkColor : undefined}
+            enableNodeDrag={false}
+            enableNavigationControls={true}
+            cooldownTicks={0}
+            d3AlphaDecay={isLargeGraph ? 0.07 : 0.02}
+            d3VelocityDecay={isLargeGraph ? 0.5 : 0.3}
+          />
       </div>
     </div>
   );
