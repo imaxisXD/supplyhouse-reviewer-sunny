@@ -42,6 +42,7 @@
       "Bash(git -C \"/Users/abhishekmac/Desktop/Hobby Projects/supplyhouse-reviewer-sunny/dashboard\" log --oneline -10)",
       "WebFetch(domain:www.deepgraph.co)",
       "WebFetch(domain:www.anthropic.com)"
+      "Bash(find src -name \"*.ts\" -exec grep -l \"summaryComment\" {} ;)"
     ]
   }
 }

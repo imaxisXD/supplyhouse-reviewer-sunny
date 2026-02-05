@@ -869,7 +869,7 @@ export async function executeReview(job: ReviewJob, sessionLogger?: Logger): Pro
       }
     }
 
-    const inlineFindings = filterFindingsForInline(verifiedFindings);
+    const inlineFindings = filterFindingsForInline(verifiedFindings).filter(f => !f.unlocatable);
     const inlineSuppressed = Math.max(verifiedFindings.length - inlineFindings.length, 0);
     log.debug(
       {
@@ -1836,17 +1836,16 @@ function parseFindingsFromResponse(text: string, agentName: string): Finding[] {
         line = 0;
       }
 
-      // Skip findings without both valid line number AND lineText - they can't be resolved
+      // Mark findings without both valid line number AND lineText as unlocatable
       const hasLineText = typeof f.lineText === "string" && f.lineText.trim().length > 0;
-      if (line <= 0 && !hasLineText) {
-        log.warn(
-          { agent: agentName, file: f.file, title: f.title, rawLine },
-          "Skipping finding with no line number and no lineText - cannot resolve location"
-        );
-        continue;
-      }
+      const unlocatable = line <= 0 && !hasLineText;
 
-      if (line <= 0 && hasLineText) {
+      if (unlocatable) {
+        log.info(
+          { agent: agentName, file: f.file, title: f.title, rawLine },
+          "Finding has no line number and no lineText - marking as unlocatable (will appear in summary)"
+        );
+      } else if (line <= 0 && hasLineText) {
         log.debug(
           { agent: agentName, file: f.file, title: f.title, lineText: f.lineText },
           "Finding has no line number but has lineText - will attempt resolution"
@@ -1894,6 +1893,7 @@ function parseFindingsFromResponse(text: string, agentName: string): Finding[] {
         lineText: f.lineText ? String(f.lineText) : undefined,
         lineId: f.lineId ? String(f.lineId) : undefined,
         cwe: f.cwe ? String(f.cwe) : undefined,
+        unlocatable: unlocatable || undefined,
         relatedCode: related && typeof related.file === "string"
           ? {
               file: String(related.file),
@@ -2570,7 +2570,15 @@ async function postFindings(
       await assertNotCancelled(cancelKey, "Review cancelled");
     }
     log.debug({ reviewId }, "Posting summary comment to Bitbucket");
-    const summaryBody = synthesis?.summaryComment ?? formatSummaryComment(summary, findings.length, traces, findings, synthesis?.recommendation);
+    let summaryBody = synthesis?.summaryComment ?? formatSummaryComment(summary, findings.length, traces, findings, synthesis?.recommendation);
+
+    // Append unlocatable findings (validated by synthesis but no line reference)
+    const unlocatableFindings = findings.filter((f) => f.unlocatable);
+    if (unlocatableFindings.length > 0) {
+      summaryBody += formatUnlocatableFindingsSection(unlocatableFindings);
+      log.info({ reviewId, count: unlocatableFindings.length }, "Added unlocatable findings to summary");
+    }
+
     await bitbucketBreaker.execute(() =>
       bitbucketClient.postSummaryComment(workspace, repoSlug, prNumber, token, summaryBody),
     );
@@ -2590,6 +2598,37 @@ async function postFindings(
 // ---------------------------------------------------------------------------
 // Comment formatting
 // ---------------------------------------------------------------------------
+
+/**
+ * Format unlocatable findings (no line reference) for the summary comment.
+ */
+function formatUnlocatableFindingsSection(findings: Finding[]): string {
+  if (findings.length === 0) return "";
+
+  const severityEmoji: Record<Severity, string> = {
+    critical: "\u{1F534}", high: "\u{1F7E0}", medium: "\u{1F7E1}", low: "\u{1F535}", info: "\u26AA",
+  };
+
+  const lines = [
+    "",
+    "---",
+    "",
+    "### \u{1F4CD} General Findings (not tied to specific lines)",
+    "",
+  ];
+
+  for (const f of findings) {
+    const emoji = severityEmoji[f.severity] ?? "\u26AA";
+    lines.push(`${emoji} **${f.title}** (\`${f.file}\`)`);
+    lines.push(`  ${f.description}`);
+    if (f.suggestion) {
+      lines.push(`  \u{1F4A1} _${f.suggestion}_`);
+    }
+    lines.push("");
+  }
+
+  return lines.join("\n");
+}
 
 function formatFindingComment(finding: Finding): string {
   const severityEmoji: Record<Severity, string> = {
