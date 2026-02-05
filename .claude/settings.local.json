@@ -11,7 +11,26 @@
       "Bash(cd:*)",
       "Bash(xargs basename:*)",
       "Bash(cd /Users/abhishekmac/Desktop/Hobby\\\\ Projects/supplyhouse-reviewer-sunny/dashboard && npx vite build:*)",
-      "mcp__ide__getDiagnostics"
+      "mcp__ide__getDiagnostics",
+      "Bash(cd /Users/abhishekmac/Desktop/Hobby\\\\ Projects/supplyhouse-reviewer-sunny && bunx tsc:*)",
+      "Bash(docker:*)",
+      "Bash(open:*)",
+      "Bash(curl:*)",
+      "Bash(redis-cli:*)",
+      "Bash(python3:*)",
+      "WebFetch(domain:support.atlassian.com)",
+      "Bash(lsof:*)",
+      "Bash(xargs kill:*)",
+      "WebFetch(domain:docs.voyageai.com)",
+      "Bash(bunx tsc:*)",
+      "WebFetch(domain:github.com)",
+      "WebFetch(domain:openrouter.ai)",
+      "Bash(tree:*)",
+      "Bash(npm view:*)",
+      "Bash(npm search:*)",
+      "Bash(git fetch:*)",
+      "Bash(git checkout:*)",
+      "Bash(grep:*)"
     ]
   }
 }

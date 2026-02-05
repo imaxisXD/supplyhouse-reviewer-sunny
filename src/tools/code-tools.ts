@@ -2,7 +2,7 @@ import { createTool } from "@mastra/core/tools";
 import { z } from "zod";
 import { createLogger } from "../config/logger.ts";
 import { getRepoContext } from "./repo-context.ts";
-import { isAbsolute, join, resolve } from "path";
+import { resolve } from "path";
 
 const log = createLogger("tools:code");
 
@@ -25,9 +25,14 @@ export const readFileTool = createTool({
   }),
   execute: async (input) => {
     const repoPath = getRepoContext()?.repoPath;
-    const filePath = repoPath
-      ? resolve(repoPath, input.filePath.replace(/^\/+/, ""))
-      : input.filePath;
+    let filePath: string;
+    if (repoPath && input.filePath.startsWith(repoPath)) {
+      filePath = input.filePath;
+    } else if (repoPath) {
+      filePath = resolve(repoPath, input.filePath.replace(/^\/+/, ""));
+    } else {
+      filePath = input.filePath;
+    }
 
     // Prevent path traversal outside the repo
     if (repoPath && !filePath.startsWith(resolve(repoPath) + "/") && filePath !== resolve(repoPath)) {
@@ -83,9 +88,14 @@ export const expandContextTool = createTool({
   }),
   execute: async (input) => {
     const repoPath = getRepoContext()?.repoPath;
-    const filePath = repoPath
-      ? resolve(repoPath, input.filePath.replace(/^\/+/, ""))
-      : input.filePath;
+    let filePath: string;
+    if (repoPath && input.filePath.startsWith(repoPath)) {
+      filePath = input.filePath;
+    } else if (repoPath) {
+      filePath = resolve(repoPath, input.filePath.replace(/^\/+/, ""));
+    } else {
+      filePath = input.filePath;
+    }
 
     // Prevent path traversal outside the repo
     if (repoPath && !filePath.startsWith(resolve(repoPath) + "/") && filePath !== resolve(repoPath)) {

@@ -42,7 +42,13 @@ function decryptToken(payload: string): string {
 }
 
 function looksEncrypted(payload: string): boolean {
-  return payload.split(":").length === 3;
+  const parts = payload.split(":");
+  // Encrypted format is base64(iv):base64(tag):base64(data) — exactly 3 parts
+  // and each part is valid base64 (no spaces, @, /, etc. outside base64 charset).
+  // A raw token like "user@email.com:appPassword" would fail the base64 check.
+  if (parts.length !== 3) return false;
+  const b64 = /^[A-Za-z0-9+/]+=*$/;
+  return parts.every((p) => p.length > 0 && b64.test(p));
 }
 
 export function reviewTokenKey(reviewId: string): string {

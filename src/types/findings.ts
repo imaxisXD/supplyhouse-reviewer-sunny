@@ -11,6 +11,8 @@ export interface Finding {
   description: string;
   suggestion?: string;
   confidence: number;
+  lineText?: string;
+  lineId?: string;
   cwe?: string;
   relatedCode?: {
     file: string;
@@ -23,6 +25,10 @@ export interface Finding {
     line: number;
     usage: string;
   }[];
+  // Verification status - set by verification agent
+  disproven?: boolean;
+  disprovenReason?: string;
+  verificationNotes?: string;
 }
 
 export interface AgentTrace {
@@ -36,12 +42,16 @@ export interface AgentTrace {
   findingsCount: number;
   status: "success" | "failed" | "skipped";
   error?: string;
+  /** Reference to Mastra's native trace for detailed span analysis */
+  mastraTraceId?: string;
 }
 
 export interface ReviewResult {
   findings: Finding[];
+  disprovenFindings?: Finding[]; // Findings disproven by verification agent
   summary: {
     totalFindings: number;
+    disprovenCount?: number; // Count of false positives removed
     bySeverity: Record<Severity, number>;
     byCategory: Record<Category, number>;
     filesAnalyzed: number;
@@ -63,6 +73,7 @@ export interface ReviewResult {
       byCategory?: Record<Category, number>;
     };
     recommendation?: string;
+    confidenceScore?: number;
   };
   traces?: AgentTrace[];
   prUrl?: string;

@@ -4,6 +4,9 @@ import { searchSimilarCode } from "../indexing/embedding-generator.ts";
 import { createLogger } from "../config/logger.ts";
 import { readFile } from "fs/promises";
 import { join } from "path";
+import type { FileDomainFacts } from "./domain-facts.ts";
+import { getFileDomainFacts } from "./domain-facts.ts";
+import type { RepoStrategyProfile } from "../utils/repo-meta.ts";
 
 const log = createLogger("context-builder");
 
@@ -49,11 +52,14 @@ export interface ContextPackage {
   callees: Callee[];
   similarCode: SimilarCode[];
   usages: Usage[];
+  domainFacts?: FileDomainFacts;
 }
 
 export interface BuildContextOptions {
   skipGraph?: boolean;
   skipVectors?: boolean;
+  domainFactsByFile?: Map<string, FileDomainFacts>;
+  repoStrategyProfile?: RepoStrategyProfile | null;
 }
 
 // ---------------------------------------------------------------------------
@@ -113,6 +119,7 @@ export async function buildContext(
         callees: [],
         similarCode: [],
         usages: [],
+        domainFacts: options?.domainFactsByFile?.get(diffFile.path),
       });
     }
   }
@@ -139,6 +146,12 @@ async function buildFileContext(
     changedTargets = await resolveChangedFunctionTargets(repoId, diffFile.path, diffFile.diff);
   }
 
+  const domainFacts = options?.domainFactsByFile
+    ? options.domainFactsByFile.get(diffFile.path)
+    : options?.skipGraph
+      ? undefined
+      : await getFileDomainFacts(repoId, diffFile.path, options?.repoStrategyProfile);
+
   // 3. Query graph and vector DB in parallel
   const [callers, callees, similarCode, usages] = await Promise.all([
     options?.skipGraph ? Promise.resolve([]) : findCallers(repoId, changedTargets),
@@ -155,6 +168,7 @@ async function buildFileContext(
     callees,
     similarCode,
     usages,
+    domainFacts,
   };
 }
 
@@ -216,6 +230,9 @@ function extractChangedLineNumbers(diff: string): number[] {
   const hunkRegex = /^@@\s+-\d+(?:,\d+)?\s+\+(\d+)(?:,\d+)?\s+@@/;
 
   for (const line of lines) {
+    if (line.startsWith("\\ No newline at end of file")) {
+      continue;
+    }
     const hunkMatch = line.match(hunkRegex);
     if (hunkMatch) {
       currentNewLine = parseInt(hunkMatch[1]!, 10);
@@ -314,8 +331,6 @@ interface FunctionRange {
  * Supports common patterns:
  *   - `function name(` / `async function name(`
  *   - `name(` / `name = (` / `name = async (`  at the start of a line
- *   - `def name(` (Python)
- *   - `fn name(` (Rust)
  *   - Method definitions in classes
  *
  * Uses brace/indentation counting to find the end of each function.
@@ -331,10 +346,12 @@ function detectFunctionRanges(lines: string[]): FunctionRange[] {
     /(?:const|let|var)\s+(\w+)\s*=\s*(?:async\s+)?\(/,
     // JS/TS: name(...) { -- method in class
     /^\s+(?:async\s+)?(\w+)\s*\([^)]*\)\s*(?::\s*\w[^{]*)?\{/,
-    // Python: def name(
-    /^(?:\s*)def\s+(\w+)\s*\(/,
-    // Rust: fn name(, pub fn name(
-    /(?:pub\s+)?fn\s+(\w+)\s*\(/,
+    // Java/Kotlin: public/private/protected [static] [async] ReturnType name(
+    /^\s*(?:public|private|protected)\s+(?:static\s+)?(?:final\s+)?(?:async\s+)?(?:\w+(?:<[^>]+>)?)\s+(\w+)\s*\(/,
+    // Java: @Override style annotations followed by method
+    /^\s*(?:@\w+\s+)*(?:public|private|protected)\s+.*\s+(\w+)\s*\(/,
+    // Dart: ReturnType name(, Future<ReturnType> name(, void name(
+    /^\s*(?:static\s+)?(?:Future<[^>]+>|Stream<[^>]+>|void|int|double|String|bool|List<[^>]+>|Map<[^>]+>|Set<[^>]+>|\w+)\s+(\w+)\s*\(/,
   ];
 
   for (let i = 0; i < lines.length; i++) {
@@ -540,10 +557,16 @@ async function findSimilarCode(
   if (functionBodies.length === 0) return [];
 
   const results: SimilarCode[] = [];
+  let consecutiveFailures = 0;
 
   for (const body of functionBodies) {
+    if (consecutiveFailures >= 2) {
+      log.debug({ file: filePath }, "Skipping remaining similar code searches after repeated failures");
+      break;
+    }
     try {
       const searchResult = await searchSimilarCode(repoId, body, SIMILAR_CODE_LIMIT);
+      consecutiveFailures = 0;
 
       for (const hit of searchResult) {
         if (hit.score < SIMILARITY_THRESHOLD) continue;
@@ -557,6 +580,7 @@ async function findSimilarCode(
         });
       }
     } catch (error) {
+      consecutiveFailures++;
       log.warn(
         { file: filePath, error: error instanceof Error ? error.message : String(error) },
         "Failed to search similar code in Qdrant",

@@ -2,6 +2,7 @@ import { Agent } from "@mastra/core/agent";
 import { MODELS } from "../mastra/models.ts";
 import { readFileTool, expandContextTool } from "../tools/code-tools.ts";
 import { searchSimilarTool } from "../tools/vector-tools.ts";
+import { normalizeToolNames } from "../tools/tool-normalization.ts";
 
 export const refactorAgent = new Agent({
   id: "refactor-agent",
@@ -59,7 +60,7 @@ export const refactorAgent = new Agent({
 
 ## Output Format
 
-Return your findings as a JSON object with a "findings" array:
+Return your findings as a JSON object with a "findings" array. Each finding must include "lineId" (e.g. "L123") and "lineText" (the code text after the diff marker):
 
 \`\`\`json
 {
@@ -67,6 +68,8 @@ Return your findings as a JSON object with a "findings" array:
     {
       "file": "src/services/order.ts",
       "line": 30,
+      "lineId": "L30",
+      "lineText": "function processOrder(order) {",
       "severity": "low",
       "category": "refactor",
       "title": "Function too long -- consider decomposing",
@@ -95,9 +98,9 @@ Note: Refactoring suggestions should almost never be "high" or "critical" severi
 
 If no refactoring suggestions are relevant, return {"findings": []}.`,
   model: MODELS.refactor,
-  tools: {
+  tools: normalizeToolNames({
     read_file: readFileTool,
     expand_context: expandContextTool,
     search_similar: searchSimilarTool,
-  },
+  }),
 });

@@ -16,6 +16,7 @@ export interface IndexJob {
   framework?: string;
   incremental?: boolean;
   changedFiles?: string[];
+  includeEmbeddings?: boolean; // opt-in for embeddings (default: false)
   createdAt: string;
 }
 

@@ -2,6 +2,7 @@ import { Agent } from "@mastra/core/agent";
 import { MODELS } from "../mastra/models.ts";
 import { searchSimilarTool, findDuplicatesTool } from "../tools/vector-tools.ts";
 import { readFileTool } from "../tools/code-tools.ts";
+import { normalizeToolNames } from "../tools/tool-normalization.ts";
 
 export const duplicationAgent = new Agent({
   id: "duplication-agent",
@@ -12,7 +13,7 @@ export const duplicationAgent = new Agent({
 
 1. **Identify New Functions**: From the PR diff, extract each new or substantially modified function.
 
-2. **Search for Similar Code**: For each function, use the search_similar tool to find semantically similar existing code in the codebase. Focus on matches with similarity > 0.85.
+2. **Search for Similar Code**: For each function, use the search_similar tool to find semantically similar existing code in the codebase. Focus on matches with similarity > 0.90.
 
 3. **Verify Duplicates**: For each potential match:
    - Use read_file to get the full code of both the new and existing function.
@@ -35,8 +36,13 @@ export const duplicationAgent = new Agent({
 
 - **> 0.95**: Almost certainly a duplicate -- report with high confidence
 - **0.90 - 0.95**: Very likely a duplicate -- read both functions carefully to confirm
-- **0.85 - 0.90**: Possibly a duplicate -- verify the logic is truly the same
-- **< 0.85**: Probably not a duplicate -- skip unless the logic is obviously identical
+- **< 0.90**: Do NOT report (insufficient evidence)
+
+## Evidence Requirements
+
+- You must use **search_similar** or **find_duplicates** and confirm similarity **>= 0.90**.
+- You must **read_file** both functions and confirm the **same input/output contract**.
+- You must include **relatedCode** with similarity in every finding; otherwise return no findings.
 
 ## When NOT to Report
 
@@ -48,7 +54,7 @@ export const duplicationAgent = new Agent({
 
 ## Output Format
 
-Return your findings as a JSON object with a "findings" array:
+Return your findings as a JSON object with a "findings" array. Each finding must include "lineId" (e.g. "L123") and "lineText" (the code text after the diff marker):
 
 \`\`\`json
 {
@@ -56,6 +62,8 @@ Return your findings as a JSON object with a "findings" array:
     {
       "file": "src/services/order.ts",
       "line": 45,
+      "lineId": "L45",
+      "lineText": "function checkEmailFormat(email) {",
       "severity": "medium",
       "category": "duplication",
       "title": "Duplicate of existing function",
@@ -75,9 +83,9 @@ Return your findings as a JSON object with a "findings" array:
 
 If no duplicates are found, return {"findings": []}.`,
   model: MODELS.duplication,
-  tools: {
+  tools: normalizeToolNames({
     search_similar: searchSimilarTool,
     find_duplicates: findDuplicatesTool,
     read_file: readFileTool,
-  },
+  }),
 });

@@ -22,13 +22,6 @@ const UsageRecord = z.object({
   context: z.string(),
 });
 
-const DefinitionRecord = z.object({
-  file: z.string(),
-  line: z.number(),
-  type: z.enum(["function", "class", "variable", "type"]),
-  signature: z.string(),
-});
-
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
@@ -229,88 +222,3 @@ export const findUsagesTool = createTool({
   },
 });
 
-// ---------------------------------------------------------------------------
-// find_definitions
-// ---------------------------------------------------------------------------
-
-export const findDefinitionsTool = createTool({
-  id: "find_definitions",
-  description:
-    "Search for the definition site of a given identifier. " +
-    "Returns the file, line, type of definition, and signature.",
-  inputSchema: z.object({
-    identifier: z.string().describe("Identifier to find the definition of"),
-    repoPath: z
-      .string()
-      .optional()
-      .describe("Absolute path to the repository root (defaults to active repo context)"),
-  }),
-  outputSchema: z.object({
-    definitions: z.array(DefinitionRecord),
-  }),
-  execute: async (input) => {
-    const { identifier } = input;
-    const repoPath = input.repoPath ?? getRepoContext()?.repoPath;
-    log.debug({ identifier, repoPath }, "Finding definitions");
-
-    try {
-      if (!repoPath) {
-        log.warn({ identifier }, "find_definitions missing repoPath");
-        return { definitions: [] };
-      }
-      // Search for common definition patterns across languages
-      const patterns = [
-        // TypeScript / JavaScript
-        `(export\\s+)?(function|const|let|var|class|interface|type|enum)\\s+${identifier}\\b`,
-        // Java / Kotlin
-        `(public|private|protected)\\s+.*\\s+${identifier}\\s*\\(`,
-        // Python
-        `^\\s*(def|class)\\s+${identifier}\\b`,
-        // Dart
-        `^\\s*(class|void|Future|Stream|int|double|String|bool)\\s+${identifier}\\b`,
-      ];
-
-      const combinedPattern = patterns.join("|");
-      const args: string[] = [
-        "--glob",
-        "!node_modules",
-        "--glob",
-        "!.git",
-        "--glob",
-        "!dist",
-        "--glob",
-        "!build",
-        combinedPattern,
-        repoPath,
-      ];
-
-      const rawMatches = await runRipgrep(args);
-
-      const definitions = rawMatches.map((m) => {
-        const content = m.data.lines.text.trimEnd();
-        let type: "function" | "class" | "variable" | "type" = "function";
-
-        if (/\b(class)\b/.test(content)) {
-          type = "class";
-        } else if (/\b(interface|type|enum)\b/.test(content)) {
-          type = "type";
-        } else if (/\b(const|let|var)\b/.test(content)) {
-          type = "variable";
-        }
-
-        return {
-          file: m.data.path.text,
-          line: m.data.line_number,
-          type,
-          signature: content.trim(),
-        };
-      });
-
-      log.debug({ definitionCount: definitions.length }, "find_definitions complete");
-      return { definitions };
-    } catch (error) {
-      log.error({ error, identifier, repoPath }, "find_definitions failed");
-      return { definitions: [] };
-    }
-  },
-});

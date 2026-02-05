@@ -1,0 +1,21 @@
+{
+  "sessionLogging": {
+    "enabled": true,
+    "logDirectory": "logs/sessions",
+    "globalLogEnabled": true
+  },
+  "review": {
+    "enabled": true,
+    "filePattern": "review-{workspace}-{repoSlug}-PR{prNumber}-{timestamp}.log",
+    "subdirectory": "reviews"
+  },
+  "index": {
+    "enabled": true,
+    "filePattern": "index-{repoId}-{branch}-{timestamp}.log",
+    "subdirectory": "indexing"
+  },
+  "formatting": {
+    "timestampFormat": "YYYYMMDD-HHmmss",
+    "sanitizePattern": "[^a-zA-Z0-9-_]"
+  }
+}

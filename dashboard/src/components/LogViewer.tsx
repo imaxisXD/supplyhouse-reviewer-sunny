@@ -12,16 +12,19 @@ function getLogLevel(review: ReviewListItem): "info" | "warning" | "error" {
 }
 
 const LEVEL_COLORS: Record<string, string> = {
-  info: "text-blue-400",
-  warning: "text-yellow-400",
-  error: "text-red-400",
+  info: "text-brand-600",
+  warning: "text-amber-700",
+  error: "text-rose-700",
 };
 
 const LEVEL_BG: Record<string, string> = {
-  info: "bg-blue-900/20 border-blue-800/50",
-  warning: "bg-yellow-900/20 border-yellow-800/50",
-  error: "bg-red-900/20 border-red-800/50",
+  info: "bg-brand-500/10 border-brand-500/30",
+  warning: "bg-amber-50 border-amber-300/70",
+  error: "bg-rose-50 border-rose-300/70",
 };
+
+const inputClass =
+  "w-full border border-ink-900 bg-white px-3 py-2 text-sm text-ink-900 placeholder:text-ink-500 focus:outline-none focus:border-brand-500";
 
 export default function LogViewer() {
   const [reviews, setReviews] = useState<ReviewListItem[]>([]);
@@ -52,12 +55,12 @@ export default function LogViewer() {
   ];
 
   if (loading) {
-    return <div className="text-center py-12 text-gray-500">Loading logs...</div>;
+    return <div className="text-center py-12 text-ink-600">Loading logs...</div>;
   }
 
   if (error) {
     return (
-      <div className="p-4 bg-red-900/30 border border-red-800 rounded-lg text-red-300 text-sm">
+      <div className="p-4 bg-rose-50 border border-rose-300/70 text-rose-700 text-sm">
         {error}
       </div>
     );
@@ -72,10 +75,10 @@ export default function LogViewer() {
             <button
               key={btn.key}
               onClick={() => setFilter(btn.key)}
-              className={`px-3 py-1.5 text-xs rounded-lg border transition-colors ${
+              className={`px-3 py-1.5 text-xs border transition-colors ${
                 filter === btn.key
-                  ? "bg-blue-600 border-blue-500 text-white"
-                  : "bg-gray-900 border-gray-700 text-gray-400 hover:text-white"
+                  ? "bg-brand-500 border-brand-500 text-white"
+                  : "bg-white border-ink-900 text-ink-600 hover:text-ink-900"
               }`}
             >
               {btn.label}
@@ -87,14 +90,14 @@ export default function LogViewer() {
           value={search}
           onChange={(e) => setSearch(e.target.value)}
           placeholder="Search by review ID..."
-          className="flex-1 px-3 py-1.5 bg-gray-900 border border-gray-700 rounded-lg text-sm text-white placeholder-gray-600 focus:outline-none focus:border-blue-500 focus:ring-1 focus:ring-blue-500/20"
+          className={inputClass}
         />
       </div>
 
       {/* Log entries */}
-      <div className="max-h-[500px] overflow-y-auto space-y-1.5 rounded-lg">
+      <div className="max-h-[500px] overflow-y-auto space-y-1.5">
         {filtered.length === 0 && (
-          <p className="text-center text-gray-600 py-8">No log entries match the current filters.</p>
+          <p className="text-center text-ink-600 py-8">No log entries match the current filters.</p>
         )}
         {filtered.map((review) => {
           const level = getLogLevel(review);
@@ -103,13 +106,13 @@ export default function LogViewer() {
           return (
             <div
               key={review.id}
-              className={`flex items-center gap-3 px-3 py-2.5 rounded-lg border text-sm ${LEVEL_BG[level]}`}
+              className={`flex items-center gap-3 px-3 py-2.5 border text-sm ${LEVEL_BG[level]}`}
             >
-              <span className="text-xs text-gray-500 font-mono shrink-0 w-36">
-                {new Date(review.startedAt).toLocaleDateString()}{" "}
+              <span className="text-xs text-ink-600 font-mono shrink-0 w-36">
+                {new Date(review.startedAt).toLocaleDateString()} {" "}
                 {new Date(review.startedAt).toLocaleTimeString()}
               </span>
-              <span className="font-mono text-xs text-gray-300 shrink-0 w-28" title={review.id}>
+              <span className="font-mono text-xs text-ink-700 shrink-0 w-28" title={review.id}>
                 {truncatedId}
               </span>
               <span
@@ -120,15 +123,15 @@ export default function LogViewer() {
               <span
                 className={`text-xs shrink-0 w-24 ${
                   review.phase === "complete"
-                    ? "text-green-400"
+                    ? "text-emerald-700"
                     : review.phase === "failed"
-                    ? "text-red-400"
-                    : "text-blue-400"
+                    ? "text-rose-700"
+                    : "text-brand-600"
                 }`}
               >
                 {review.phase}
               </span>
-              <span className="text-xs text-gray-400 shrink-0">
+              <span className="text-xs text-ink-600 shrink-0">
                 {review.totalFindings} finding{review.totalFindings !== 1 ? "s" : ""}
               </span>
             </div>

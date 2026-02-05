@@ -22,6 +22,7 @@ export interface DiffFile {
   diff: string;
   additions: number;
   deletions: number;
+  hunks?: DiffHunk[];
 }
 
 export interface DiffHunk {
@@ -36,11 +37,5 @@ export interface DiffChange {
   type: "add" | "delete" | "context";
   lineOld?: number;
   lineNew?: number;
-  content: string;
-}
-
-export interface InlineComment {
-  file: string;
-  line: number;
   content: string;
 }

@@ -3,6 +3,19 @@ import { useParams } from "react-router-dom";
 import { getReviewResult } from "../api/client";
 import type { ReviewResult } from "../api/client";
 import FindingsTable from "../components/FindingsTable";
+import { advanceJourneyStep } from "../journey";
+
+const panelClass =
+  "border border-ink-900 bg-white p-4";
+const panelTitleClass = "text-[10px] uppercase tracking-[0.35em] text-ink-600";
+const statCardClass = "border border-ink-900 bg-white p-4";
+const statLabelClass = "text-[10px] uppercase tracking-[0.3em] text-ink-600";
+const statValueClass = "mt-2 text-xl font-semibold text-ink-950";
+const tableHeaderClass = "px-4 py-3 text-[10px] uppercase tracking-[0.3em] text-ink-600";
+const tableRowClass = "border-b border-ink-900 hover:bg-warm-100/60 transition-colors";
+const tableCellClass = "px-4 py-2.5 text-sm text-ink-700";
+const ghostButtonClass =
+  "inline-flex items-center justify-center gap-2 border border-ink-900 bg-white px-4 py-2 text-[11px] font-semibold uppercase tracking-[0.3em] text-ink-700 transition hover:border-brand-500 hover:text-brand-600";
 
 function buildCommentUrl(prUrl: string, commentId?: string): string {
   const match = prUrl.match(/bitbucket\.org\/([^/]+)\/([^/]+)\/pull-requests\/(\d+)/);
@@ -28,15 +41,15 @@ function downloadFile(content: string, filename: string, type: string) {
 }
 
 const STATUS_COLORS: Record<string, string> = {
-  success: "bg-green-500",
-  failed: "bg-red-500",
-  skipped: "bg-gray-500",
+  success: "bg-emerald-500",
+  failed: "bg-rose-500",
+  skipped: "bg-warm-300",
 };
 
 const STATUS_TEXT_COLORS: Record<string, string> = {
-  success: "text-green-400",
-  failed: "text-red-400",
-  skipped: "text-gray-400",
+  success: "text-emerald-700",
+  failed: "text-rose-700",
+  skipped: "text-ink-600",
 };
 
 export default function ReviewResults() {
@@ -46,6 +59,7 @@ export default function ReviewResults() {
 
   useEffect(() => {
     if (!id) return;
+    void advanceJourneyStep("results");
     getReviewResult(id)
       .then(setResult)
       .catch((err) => setError(err.message));
@@ -74,8 +88,8 @@ export default function ReviewResults() {
 
   if (error) {
     return (
-      <div className="max-w-xl mx-auto">
-        <div className="p-4 bg-red-900/30 border border-red-800 rounded-lg text-red-300">
+      <div className="mx-auto max-w-xl">
+        <div className="border border-rose-400/50 bg-rose-50 p-4 text-rose-700">
           {error}
         </div>
       </div>
@@ -84,7 +98,7 @@ export default function ReviewResults() {
 
   if (!result) {
     return (
-      <div className="text-center py-16 text-gray-500">Loading results...</div>
+      <div className="text-center py-16 text-ink-600">Loading results...</div>
     );
   }
 
@@ -98,84 +112,86 @@ export default function ReviewResults() {
       : 0;
 
   return (
-    <div className="max-w-4xl mx-auto">
-      <div className="flex items-center justify-between mb-1">
-        <h1 className="text-2xl font-bold">Review Results</h1>
+    <div className="mx-auto max-w-4xl space-y-6">
+      <div className="flex flex-wrap items-start justify-between gap-4">
+        <div>
+          <div className="text-[11px] uppercase tracking-[0.45em] text-ink-600">Review</div>
+          <h1 className="mt-2 text-2xl font-semibold text-ink-950">Review Results</h1>
+          <p className="mt-2 text-sm font-mono text-ink-600">{id}</p>
+        </div>
         <div className="flex gap-2">
-          <button
-            onClick={handleExportJSON}
-            className="px-3 py-1.5 bg-gray-800 hover:bg-gray-700 border border-gray-700 rounded-lg text-xs text-gray-300 transition-colors"
-          >
+          <button onClick={handleExportJSON} className={ghostButtonClass}>
             Export JSON
           </button>
-          <button
-            onClick={handleExportCSV}
-            className="px-3 py-1.5 bg-gray-800 hover:bg-gray-700 border border-gray-700 rounded-lg text-xs text-gray-300 transition-colors"
-          >
+          <button onClick={handleExportCSV} className={ghostButtonClass}>
             Export CSV
           </button>
         </div>
       </div>
-      <p className="text-gray-500 text-sm mb-8 font-mono">{id}</p>
 
-      {/* Summary Stats */}
-      <div className="grid grid-cols-2 sm:grid-cols-5 gap-3 mb-8">
-        <div className="bg-gray-900 border border-gray-800 rounded-lg p-4">
-          <p className="text-xs text-gray-500 mb-1">Total Findings</p>
-          <p className="text-2xl font-bold text-white">{summary.totalFindings}</p>
+      <div className="grid grid-cols-2 gap-3 sm:grid-cols-6">
+        <div className={statCardClass}>
+          <p className={statLabelClass}>Total Findings</p>
+          <p className={statValueClass}>{summary.totalFindings}</p>
         </div>
         {severityOrder.map((sev) => {
           const count = summary.bySeverity[sev] ?? 0;
           const colorMap: Record<string, string> = {
-            critical: "text-red-400",
-            high: "text-orange-400",
-            medium: "text-yellow-400",
-            low: "text-blue-400",
-            info: "text-gray-400",
+            critical: "text-rose-700",
+            high: "text-orange-700",
+            medium: "text-amber-700",
+            low: "text-sky-700",
+            info: "text-ink-600",
           };
           return (
-            <div key={sev} className="bg-gray-900 border border-gray-800 rounded-lg p-4">
-              <p className="text-xs text-gray-500 mb-1 capitalize">{sev}</p>
-              <p className={`text-2xl font-bold ${colorMap[sev]}`}>{count}</p>
+            <div key={sev} className={statCardClass}>
+              <p className={`${statLabelClass} capitalize`}>{sev}</p>
+              <p className={`${statValueClass} ${colorMap[sev]}`}>{count}</p>
             </div>
           );
         })}
+        {summary.disprovenCount !== undefined && summary.disprovenCount > 0 && (
+          <div className={statCardClass}>
+            <p className={statLabelClass}>False Positives</p>
+            <p className={`${statValueClass} text-rose-500`}>{summary.disprovenCount}</p>
+          </div>
+        )}
       </div>
 
-      <div className="grid grid-cols-3 gap-3 mb-8">
-        <div className="bg-gray-900 border border-gray-800 rounded-lg p-4">
-          <p className="text-xs text-gray-500 mb-1">Files Analyzed</p>
-          <p className="text-2xl font-bold text-blue-400">{summary.filesAnalyzed}</p>
+      <div className="grid grid-cols-1 gap-3 sm:grid-cols-3">
+        <div className={statCardClass}>
+          <p className={statLabelClass}>Files Analyzed</p>
+          <p className={`${statValueClass} text-brand-600`}>{summary.filesAnalyzed}</p>
         </div>
-        <div className="bg-gray-900 border border-gray-800 rounded-lg p-4">
-          <p className="text-xs text-gray-500 mb-1">Duration</p>
-          <p className="text-2xl font-bold text-purple-400">
+        <div className={statCardClass}>
+          <p className={statLabelClass}>Duration</p>
+          <p className={`${statValueClass} text-amber-700`}>
             {(summary.durationMs / 1000).toFixed(1)}s
           </p>
         </div>
-        <div className="bg-gray-900 border border-gray-800 rounded-lg p-4">
-          <p className="text-xs text-gray-500 mb-1">Cost</p>
-          <p className="text-2xl font-bold text-emerald-400">
+        <div className={statCardClass}>
+          <p className={statLabelClass}>Cost</p>
+          <p className={`${statValueClass} text-emerald-700`}>
             ${summary.costUsd.toFixed(4)}
           </p>
         </div>
       </div>
 
       {result.synthesis && (result.synthesis.summaryComment || result.synthesis.recommendation) && (
-        <div className="mb-10 space-y-4">
-          <h2 className="text-lg font-semibold">Synthesis</h2>
+        <div className="space-y-4">
+          <h2 className="text-lg font-semibold text-ink-950">Synthesis</h2>
           {result.synthesis.recommendation && (
-            <div className="bg-gray-900 border border-gray-800 rounded-lg p-4">
-              <p className="text-xs text-gray-500 mb-2">Recommendation</p>
-              <p className="text-sm text-gray-200 whitespace-pre-wrap">
+            <div className={panelClass}>
+              <p className={panelTitleClass}>Recommendation</p>
+              <p className="mt-3 text-sm text-ink-800 whitespace-pre-wrap">
                 {result.synthesis.recommendation}
               </p>
             </div>
           )}
           {result.synthesis.summaryComment && (
-            <div className="bg-gray-900 border border-gray-800 rounded-lg p-4">
-              <p className="text-xs text-gray-500 mb-2">Summary Comment</p>
-              <p className="text-sm text-gray-200 whitespace-pre-wrap">
+            <div className={panelClass}>
+              <p className={panelTitleClass}>Summary Comment</p>
+              <p className="mt-3 text-sm text-ink-800 whitespace-pre-wrap">
                 {result.synthesis.summaryComment}
               </p>
             </div>
@@ -183,18 +199,34 @@ export default function ReviewResults() {
         </div>
       )}
 
-      {/* Findings Table */}
-      <h2 className="text-lg font-semibold mb-4">Findings</h2>
-      <FindingsTable findings={result.findings} />
+      <div className="space-y-4">
+        <h2 className="text-lg font-semibold text-ink-950">Findings</h2>
+        <FindingsTable findings={result.findings} />
+      </div>
 
-      {/* Agent Traces */}
+      {result.disprovenFindings && result.disprovenFindings.length > 0 && (
+        <div className="space-y-4">
+          <div className="flex items-center gap-3">
+            <h2 className="text-lg font-semibold text-ink-950">Disproven Findings</h2>
+            <span className="inline-flex items-center gap-1.5 px-2 py-0.5 text-xs font-medium bg-rose-100 text-rose-700 border border-rose-200">
+              {result.disprovenFindings.length} false positive{result.disprovenFindings.length !== 1 ? "s" : ""} removed
+            </span>
+          </div>
+          <p className="text-sm text-ink-600">
+            These findings were automatically identified as false positives by the verification agent and were not posted as comments.
+          </p>
+          <div className="opacity-75">
+            <FindingsTable findings={result.disprovenFindings} showDisprovenReason />
+          </div>
+        </div>
+      )}
+
       {result.traces && result.traces.length > 0 && (
-        <div className="mt-12">
-          <h2 className="text-lg font-semibold mb-4">Agent Traces</h2>
+        <div className="space-y-4">
+          <h2 className="text-lg font-semibold text-ink-950">Agent Traces</h2>
 
-          {/* Traces table */}
-          <div className="bg-gray-900 border border-gray-800 rounded-lg overflow-hidden mb-6">
-            <div className="grid grid-cols-[1fr_80px_80px_80px_80px] gap-2 px-4 py-2 border-b border-gray-800 text-xs text-gray-500">
+          <div className="overflow-hidden border border-ink-900 bg-white">
+            <div className="grid grid-cols-[1fr_80px_80px_80px_80px] gap-2 px-4 py-3 border-b border-ink-900 text-xs text-ink-600">
               <span>Agent</span>
               <span className="text-right">Status</span>
               <span className="text-right">Duration</span>
@@ -204,73 +236,73 @@ export default function ReviewResults() {
             {result.traces.map((trace) => (
               <div
                 key={trace.agent}
-                className="grid grid-cols-[1fr_80px_80px_80px_80px] gap-2 px-4 py-2.5 border-b border-gray-800/50 text-sm hover:bg-gray-800/30 transition-colors"
+                className="grid grid-cols-[1fr_80px_80px_80px_80px] gap-2 px-4 py-2.5 border-b border-ink-900 text-sm hover:bg-warm-100/70 transition-colors"
               >
-                <span className="text-gray-200 font-medium">{trace.agent}</span>
+                <span className="text-ink-900 font-medium">{trace.agent}</span>
                 <span className="text-right">
                   <span
-                    className={`inline-flex items-center gap-1.5 text-xs ${STATUS_TEXT_COLORS[trace.status] ?? "text-gray-400"}`}
+                    className={`inline-flex items-center gap-1.5 text-xs ${STATUS_TEXT_COLORS[trace.status] ?? "text-ink-600"}`}
                   >
                     <span
-                      className={`w-1.5 h-1.5 rounded-full ${STATUS_COLORS[trace.status] ?? "bg-gray-500"}`}
+                      className={`h-1.5 w-1.5 ${STATUS_COLORS[trace.status] ?? "bg-warm-300"}`}
                     />
                     {trace.status}
                   </span>
                 </span>
-                <span className="text-right text-gray-300 font-mono text-xs">
+                <span className="text-right text-ink-700 font-mono text-xs">
                   {(trace.durationMs / 1000).toFixed(1)}s
                 </span>
-                <span className="text-right text-gray-400 font-mono text-xs">
+                <span className="text-right text-ink-600 font-mono text-xs">
                   {trace.inputTokens + trace.outputTokens}
                 </span>
-                <span className="text-right text-gray-400 font-mono text-xs">
+                <span className="text-right text-ink-600 font-mono text-xs">
                   ${trace.costUsd.toFixed(4)}
                 </span>
               </div>
             ))}
           </div>
 
-          {/* Duration bar chart */}
-          <h3 className="text-sm font-medium text-gray-400 mb-3">Relative Duration</h3>
-          <div className="space-y-2">
-            {result.traces.map((trace) => {
-              const widthPercent =
-                maxTraceDuration > 0 ? (trace.durationMs / maxTraceDuration) * 100 : 0;
-              return (
-                <div key={`bar-${trace.agent}`} className="flex items-center gap-3">
-                  <span className="text-xs text-gray-400 w-32 shrink-0 text-right truncate">
-                    {trace.agent}
-                  </span>
-                  <div className="flex-1 h-5 bg-gray-800 rounded overflow-hidden">
-                    <div
-                      className={`h-full rounded transition-all duration-500 ${
-                        trace.status === "success"
-                          ? "bg-green-600"
-                          : trace.status === "failed"
-                          ? "bg-red-600"
-                          : "bg-gray-600"
-                      }`}
-                      style={{ width: `${widthPercent}%` }}
-                    />
+          <div>
+            <h3 className="text-sm font-medium text-ink-700 mb-3">Relative Duration</h3>
+            <div className="space-y-2">
+              {result.traces.map((trace) => {
+                const widthPercent =
+                  maxTraceDuration > 0 ? (trace.durationMs / maxTraceDuration) * 100 : 0;
+                return (
+                  <div key={`bar-${trace.agent}`} className="flex items-center gap-3">
+                    <span className="text-xs text-ink-600 w-32 shrink-0 text-right truncate">
+                      {trace.agent}
+                    </span>
+                    <div className="flex-1 h-5 bg-warm-200 overflow-hidden">
+                      <div
+                        className={`h-full transition-all duration-500 ${
+                          trace.status === "success"
+                            ? "bg-emerald-500"
+                            : trace.status === "failed"
+                            ? "bg-rose-500"
+                            : "bg-warm-400"
+                        }`}
+                        style={{ width: `${widthPercent}%` }}
+                      />
+                    </div>
+                    <span className="text-xs text-ink-600 font-mono w-16 shrink-0">
+                      {(trace.durationMs / 1000).toFixed(1)}s
+                    </span>
                   </div>
-                  <span className="text-xs text-gray-500 font-mono w-16 shrink-0">
-                    {(trace.durationMs / 1000).toFixed(1)}s
-                  </span>
-                </div>
-              );
-            })}
+                );
+              })}
+            </div>
           </div>
         </div>
       )}
 
-      {/* Comments Posted */}
       {result.commentsPosted && result.commentsPosted.length > 0 && (
-        <div className="mt-12">
-          <h2 className="text-lg font-semibold mb-4">
+        <div className="space-y-4">
+          <h2 className="text-lg font-semibold text-ink-950">
             Comments Posted ({result.commentsPosted.length})
           </h2>
-          <div className="bg-gray-900 border border-gray-800 rounded-lg overflow-hidden">
-            <div className="grid grid-cols-[1fr_80px_120px] gap-2 px-4 py-2 border-b border-gray-800 text-xs text-gray-500">
+          <div className="overflow-hidden border border-ink-900 bg-white">
+            <div className="grid grid-cols-[1fr_80px_120px] gap-2 px-4 py-3 border-b border-ink-900 text-xs text-ink-600">
               <span>File</span>
               <span className="text-right">Line</span>
               <span className="text-right">Link</span>
@@ -278,12 +310,12 @@ export default function ReviewResults() {
             {result.commentsPosted.map((comment, idx) => (
               <div
                 key={`comment-${idx}`}
-                className="grid grid-cols-[1fr_80px_120px] gap-2 px-4 py-2.5 border-b border-gray-800/50 text-sm hover:bg-gray-800/30 transition-colors"
+                className={`grid grid-cols-[1fr_80px_120px] gap-2 ${tableCellClass} ${tableRowClass}`}
               >
-                <span className="text-gray-300 font-mono text-xs truncate">
+                <span className="text-ink-700 font-mono text-xs truncate">
                   {comment.file}
                 </span>
-                <span className="text-right text-gray-400 font-mono text-xs">
+                <span className="text-right text-ink-600 font-mono text-xs">
                   {comment.line}
                 </span>
                 <span className="text-right">
@@ -292,12 +324,12 @@ export default function ReviewResults() {
                       href={buildCommentUrl(result.prUrl, comment.commentId)}
                       target="_blank"
                       rel="noopener noreferrer"
-                      className="text-xs text-blue-400 hover:text-blue-300 transition-colors"
+                      className="text-xs text-brand-600 hover:text-brand-700 transition-colors"
                     >
                       View in Bitbucket
                     </a>
                   ) : (
-                    <span className="text-xs text-gray-600">#{comment.commentId}</span>
+                    <span className="text-xs text-ink-600">#{comment.commentId}</span>
                   )}
                 </span>
               </div>

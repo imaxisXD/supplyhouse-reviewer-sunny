@@ -13,17 +13,25 @@
 
 import { Worker, Queue } from "bullmq";
 import type { Job } from "bullmq";
+import type { Logger } from "pino";
 import { redis, publish } from "../db/redis.ts";
 import { createLogger } from "../config/logger.ts";
+import { createIndexSessionLogger } from "../config/session-logger.ts";
 import { env } from "../config/env.ts";
 import type { IndexJob, IndexStatus, IndexPhase } from "../types/index.ts";
-import type { ParsedFile, CodeParser } from "../indexing/parsers/base.ts";
-import type { CodeSnippet } from "../indexing/embedding-generator.ts";
-import { typescriptParser, ensureTreeSitterLoaded as ensureTsTreeSitter } from "../indexing/parsers/typescript.ts";
-import { javaParser, ensureTreeSitterLoaded as ensureJavaTreeSitter } from "../indexing/parsers/java.ts";
-import { dartParser, ensureTreeSitterLoaded as ensureDartTreeSitter } from "../indexing/parsers/dart.ts";
-import { ftlParser } from "../indexing/parsers/ftl.ts";
+import type { ParsedFile } from "../indexing/parsers/base.ts";
+import { ensureTreeSitterLoaded as ensureTsTreeSitter } from "../indexing/parsers/typescript.ts";
+import { ensureTreeSitterLoaded as ensureJavaTreeSitter } from "../indexing/parsers/java.ts";
+import { ensureTreeSitterLoaded as ensureDartTreeSitter } from "../indexing/parsers/dart.ts";
 import { detectFrameworks } from "../indexing/framework-detector.ts";
+import {
+  PARSEABLE_EXTENSIONS,
+  ALWAYS_EXCLUDE,
+  MAX_FILE_SIZE,
+  getParserForFile,
+  collectSourceFiles,
+  extractSnippets,
+} from "../indexing/source-collector.ts";
 import { buildGraph } from "../indexing/graph-builder.ts";
 import { generateAndStoreEmbeddings } from "../indexing/embedding-generator.ts";
 import { runCypher } from "../db/memgraph.ts";
@@ -36,6 +44,10 @@ import { collectionName } from "../indexing/embedding-generator.ts";
 import { qdrantBreaker } from "../services/breakers.ts";
 import { deleteToken, fetchToken } from "../utils/token-store.ts";
 import { assertNotCancelled, indexCancelKey } from "../utils/cancellation.ts";
+import { bitbucketClient } from "../bitbucket/client.ts";
+import { buildRepoStrategyProfile, setRepoMeta, setRepoStrategyProfile } from "../utils/repo-meta.ts";
+import { getIndexingStrategyId } from "../indexing/strategies/index.ts";
+import { buildOfbizGraph, collectOfbizFiles, extractOfbizSnippets, parseOfbizFiles, tagJavaNodes } from "../indexing/strategies/ofbiz-supplyhouse.ts";
 
 const log = createLogger("index-worker");
 
@@ -47,44 +59,9 @@ const QUEUE_NAME = "indexing";
 const REDIS_URL = process.env.REDIS_URL || "redis://localhost:6379";
 const CLONE_BASE_DIR = process.env.CLONE_DIR || "/tmp/supplyhouse-repos";
 
-/** File extensions we know how to parse. */
-const PARSEABLE_EXTENSIONS = new Set([
-  ".ts", ".tsx", ".js", ".jsx",
-  ".java",
-  ".dart",
-  ".ftl",
-]);
-
-/** Directories that should always be excluded. */
-const ALWAYS_EXCLUDE = new Set([
-  "node_modules", ".git", ".svn", ".hg",
-  "__pycache__", ".venv", "venv",
-  ".gradle", ".mvn", "target", "build",
-  "dist", ".next", ".nuxt", "out",
-  ".dart_tool", ".flutter-plugins",
-  ".idea", ".vscode",
-]);
-
-/** Maximum file size to parse (512 KB). */
-const MAX_FILE_SIZE = 512 * 1024;
-
-// ---------------------------------------------------------------------------
-// Parser registry
-// ---------------------------------------------------------------------------
-
-const PARSERS: CodeParser[] = [
-  typescriptParser,
-  javaParser,
-  dartParser,
-  ftlParser,
-];
-
-function getParserForFile(filePath: string): CodeParser | null {
-  const ext = path.extname(filePath).toLowerCase();
-  // TypeScript parser also handles .js/.jsx since the regex fallback works.
-  if (ext === ".js" || ext === ".jsx") return typescriptParser;
-  return PARSERS.find((p) => p.fileExtensions.includes(ext)) ?? null;
-}
+// Constants (PARSEABLE_EXTENSIONS, ALWAYS_EXCLUDE, MAX_FILE_SIZE) and helpers
+// (getParserForFile, collectSourceFiles, extractSnippets) are imported from
+// ../indexing/source-collector.ts
 
 // ---------------------------------------------------------------------------
 // BullMQ Queue + Worker
@@ -166,18 +143,35 @@ async function processIndexJob(job: IndexJob): Promise<void> {
   const { id: jobId, repoUrl, branch } = job;
   let token: string | undefined;
   const { repoId } = deriveRepoIdFromUrl(repoUrl);
+  const strategyId = getIndexingStrategyId(repoId);
+  const isOfbiz = strategyId === "ofbiz-supplyhouse";
   const cancelKey = indexCancelKey(jobId);
   let cloneDir = "";
 
+  // Create session-specific logger for this indexing job
+  const sessionLog = createIndexSessionLogger({
+    jobId,
+    repoId,
+    branch,
+  });
+
   try {
+    sessionLog.info({ repoUrl, framework: job.framework }, "Index session started");
+
+    try {
+      await setRepoMeta({ repoId, repoUrl, branch });
+    } catch (error) {
+      sessionLog.warn({ repoId, error: error instanceof Error ? error.message : String(error) }, "Failed to store repo metadata");
+    }
     if (job.tokenKey) {
       token = await fetchToken(job.tokenKey) ?? undefined;
     }
     if (!token) {
       throw new Error("Bitbucket token not available for index job");
     }
-    if (!env.VOYAGE_API_KEY) {
-      throw new Error("VOYAGE_API_KEY is required to index repositories");
+    // Only require VOYAGE_API_KEY if embeddings are requested
+    if (job.includeEmbeddings && !env.VOYAGE_API_KEY) {
+      throw new Error("VOYAGE_API_KEY is required when includeEmbeddings is enabled");
     }
     await assertNotCancelled(cancelKey, "Index job cancelled");
     // ---- Step 1: Clone --------------------------------------------------
@@ -203,6 +197,11 @@ async function processIndexJob(job: IndexJob): Promise<void> {
       ...(matchedOverride ? matchedOverride.excludePatterns : detections.flatMap((d) => d.excludePatterns)),
     ]);
     await updateStatus(jobId, "detecting-framework", 25, { framework: primaryFramework, branch, repoUrl, repoId });
+    try {
+      await setRepoMeta({ repoId, repoUrl, branch, framework: primaryFramework });
+    } catch (error) {
+      sessionLog.warn({ repoId, error: error instanceof Error ? error.message : String(error) }, "Failed to store repo framework metadata");
+    }
 
     // ---- Full re-index: clear old data ----------------------------------
     if (!job.incremental) {
@@ -222,8 +221,12 @@ async function processIndexJob(job: IndexJob): Promise<void> {
     await updateStatus(jobId, "parsing", 30);
 
     let sourceFiles: string[];
+    let ofbizFileSet = null as ReturnType<typeof collectOfbizFiles> | null;
 
-    if (job.incremental && job.changedFiles) {
+    if (isOfbiz) {
+      ofbizFileSet = collectOfbizFiles(cloneDir, excludePatterns, !!job.incremental, job.changedFiles);
+      sourceFiles = ofbizFileSet.codeFiles;
+    } else if (job.incremental && job.changedFiles) {
       // Only parse changed files
       sourceFiles = job.changedFiles
         .map((f) => path.join(cloneDir, f))
@@ -242,10 +245,13 @@ async function processIndexJob(job: IndexJob): Promise<void> {
     }
 
     const totalFiles = sourceFiles.length;
-    log.info({ jobId, totalFiles, framework: primaryFramework, incremental: !!job.incremental }, "Parsing source files");
+    sessionLog.info({ jobId, totalFiles, framework: primaryFramework, incremental: !!job.incremental }, "Parsing source files");
 
     const parsedFiles: ParsedFile[] = [];
     let filesProcessed = 0;
+    const ofbizData = isOfbiz && ofbizFileSet
+      ? parseOfbizFiles(cloneDir, ofbizFileSet)
+      : null;
 
     for (const filePath of sourceFiles) {
       const parser = getParserForFile(filePath);
@@ -259,7 +265,7 @@ async function processIndexJob(job: IndexJob): Promise<void> {
         parsedFiles.push(parsed);
       } catch (error) {
         const msg = error instanceof Error ? error.message : String(error);
-        log.warn({ jobId, file: filePath, error: msg }, "Failed to parse file");
+        sessionLog.warn({ jobId, file: filePath, error: msg }, "Failed to parse file");
       }
 
       filesProcessed++;
@@ -274,7 +280,7 @@ async function processIndexJob(job: IndexJob): Promise<void> {
       }
     }
 
-    log.info(
+    sessionLog.info(
       { jobId, parsedFiles: parsedFiles.length, totalFiles },
       "Parsing complete",
     );
@@ -283,20 +289,42 @@ async function processIndexJob(job: IndexJob): Promise<void> {
     await updateStatus(jobId, "building-graph", 60);
     await assertNotCancelled(cancelKey, "Index job cancelled");
     await buildGraph(repoId, parsedFiles);
+    if (isOfbiz && ofbizData) {
+      await tagJavaNodes(repoId, parsedFiles);
+      await buildOfbizGraph(repoId, ofbizData);
+    }
     await updateStatus(jobId, "building-graph", 75);
     await assertNotCancelled(cancelKey, "Index job cancelled");
 
-    // ---- Step 5: Generate embeddings ------------------------------------
-    await updateStatus(jobId, "generating-embeddings", 78);
-    await assertNotCancelled(cancelKey, "Index job cancelled");
-    const snippets = extractSnippets(parsedFiles);
-    const embeddingsStored = await generateAndStoreEmbeddings(repoId, snippets);
-    await updateStatus(jobId, "generating-embeddings", 95, {
-      functionsIndexed: embeddingsStored,
-    });
-    await assertNotCancelled(cancelKey, "Index job cancelled");
+    // ---- Step 5: Generate embeddings (OPTIONAL) --------------------------
+    let embeddingsStored = 0;
+    if (job.includeEmbeddings) {
+      await updateStatus(jobId, "generating-embeddings", 78);
+      await assertNotCancelled(cancelKey, "Index job cancelled");
+      let snippets = extractSnippets(parsedFiles);
+      if (isOfbiz) {
+        snippets = snippets.filter((s) => !s.file.toLowerCase().endsWith(".ftl"));
+      }
+      if (isOfbiz && ofbizData) {
+        snippets.push(...extractOfbizSnippets(cloneDir, ofbizData));
+      }
+      embeddingsStored = await generateAndStoreEmbeddings(repoId, snippets);
+      await updateStatus(jobId, "generating-embeddings", 95, {
+        functionsIndexed: embeddingsStored,
+      });
+      await assertNotCancelled(cancelKey, "Index job cancelled");
+    } else {
+      sessionLog.info({ jobId }, "Skipping embedding generation (not enabled)");
+    }
 
     // ---- Done -----------------------------------------------------------
+    try {
+      const strategyProfile = buildRepoStrategyProfile(repoId, strategyId);
+      await setRepoStrategyProfile(strategyProfile);
+    } catch (error) {
+      sessionLog.warn({ repoId, error: error instanceof Error ? error.message : String(error) }, "Failed to store repo strategy profile");
+    }
+
     await updateStatus(jobId, "complete", 100, {
       filesProcessed: parsedFiles.length,
       totalFiles,
@@ -305,19 +333,20 @@ async function processIndexJob(job: IndexJob): Promise<void> {
       repoId,
     });
 
-    log.info(
+    sessionLog.info(
       {
         jobId,
         framework: primaryFramework,
         files: parsedFiles.length,
         embeddings: embeddingsStored,
+        embeddingsEnabled: !!job.includeEmbeddings,
         incremental: !!job.incremental,
       },
-      "Indexing complete",
+      "Index session completed",
     );
   } catch (error) {
     const msg = error instanceof Error ? error.message : String(error);
-    log.error({ jobId, error: msg }, "Indexing failed");
+    sessionLog.error({ jobId, error: msg }, "Index session failed");
     await updateStatus(jobId, "failed", 0, { error: msg });
     throw error;
   } finally {
@@ -326,7 +355,7 @@ async function processIndexJob(job: IndexJob): Promise<void> {
       try {
         fs.rmSync(cloneDir, { recursive: true, force: true });
       } catch {
-        log.warn({ jobId, cloneDir }, "Failed to clean up clone directory");
+        sessionLog.warn({ jobId, cloneDir }, "Failed to clean up clone directory");
       }
     }
   }
@@ -382,6 +411,26 @@ async function deleteOldData(repoId: string, changedFiles: string[]): Promise<vo
       `MATCH (c:Class) WHERE c.repoId = $repoId AND c.file IN $paths DETACH DELETE c`,
       { repoId, paths: changedFiles },
     );
+    const extraLabels = [
+      "Component",
+      "Webapp",
+      "Controller",
+      "RequestMap",
+      "ViewMap",
+      "Screen",
+      "Form",
+      "Service",
+      "Entity",
+      "TemplateFTL",
+      "BshScript",
+      "JSFile",
+    ];
+    for (const label of extraLabels) {
+      await runCypher(
+        `MATCH (n:${label}) WHERE n.repoId = $repoId AND n.file IN $paths DETACH DELETE n`,
+        { repoId, paths: changedFiles },
+      );
+    }
   } catch (error) {
     log.warn({ repoId, error: error instanceof Error ? error.message : String(error) }, "Failed to delete old Memgraph data");
   }
@@ -428,8 +477,25 @@ async function cloneRepo(
   let authUrl = repoUrl;
   if (token && repoUrl.startsWith("https://")) {
     const url = new URL(repoUrl);
-    url.username = "x-token-auth";
-    url.password = token;
+    if (token.includes(":")) {
+      // App Password format — email:app_password or username:app_password
+      // Git clone requires the real Bitbucket username, not the email.
+      const pass = token.split(":").slice(1).join(":");
+      let gitUser = token.split(":")[0]!;
+      try {
+        const profile = await bitbucketClient.getAuthenticatedUser(token);
+        if (profile.username) gitUser = profile.username;
+      } catch (err) {
+        log.warn({ repoUrl, error: err instanceof Error ? err.message : String(err) },
+          "Could not resolve Bitbucket username for git clone; using provided user");
+      }
+      url.username = encodeURIComponent(gitUser);
+      url.password = encodeURIComponent(pass);
+    } else {
+      // OAuth / Bearer token
+      url.username = "x-token-auth";
+      url.password = token;
+    }
     authUrl = url.toString();
   }
 
@@ -451,118 +517,18 @@ async function cloneRepo(
 
   if (exitCode !== 0) {
     const stderr = await new Response(proc.stderr).text();
-    // Sanitize: remove the token from error messages
-    const sanitized = stderr.replace(
-      /x-token-auth:[^@]+@/g,
-      "x-token-auth:***@",
-    );
+    const sanitized = stderr
+      .replace(/x-token-auth:[^@]+@/g, "x-token-auth:***@")
+      .replace(/:\/\/[^:]+:[^@]+@/g, "://***:***@");
     throw new Error(`git clone failed (exit ${exitCode}): ${sanitized}`);
   }
 
   return cloneDir;
 }
 
-// ---------------------------------------------------------------------------
-// File collection
-// ---------------------------------------------------------------------------
+// collectSourceFiles is imported from ../indexing/source-collector.ts
 
-/**
- * Recursively walk the directory tree and collect files that match parseable
- * extensions, skipping excluded directories and files exceeding the size limit.
- */
-function collectSourceFiles(
-  dir: string,
-  excludePatterns: Set<string>,
-): string[] {
-  const files: string[] = [];
-
-  function walk(current: string): void {
-    let entries: fs.Dirent[];
-    try {
-      entries = fs.readdirSync(current, { withFileTypes: true });
-    } catch {
-      return;
-    }
-
-    for (const entry of entries) {
-      const fullPath = path.join(current, entry.name);
-
-      if (entry.isDirectory()) {
-        if (excludePatterns.has(entry.name) || ALWAYS_EXCLUDE.has(entry.name)) {
-          continue;
-        }
-        walk(fullPath);
-      } else if (entry.isFile()) {
-        const ext = path.extname(entry.name).toLowerCase();
-        if (!PARSEABLE_EXTENSIONS.has(ext)) continue;
-
-        // Skip large files
-        try {
-          const stat = fs.statSync(fullPath);
-          if (stat.size > MAX_FILE_SIZE) continue;
-        } catch {
-          continue;
-        }
-
-        files.push(fullPath);
-      }
-    }
-  }
-
-  walk(dir);
-  return files;
-}
-
-// ---------------------------------------------------------------------------
-// Snippet extraction (for embeddings)
-// ---------------------------------------------------------------------------
-
-/**
- * Convert parsed files into CodeSnippet array suitable for embedding.
- * Each function and class method becomes one snippet.
- */
-function extractSnippets(files: ParsedFile[]): CodeSnippet[] {
-  const snippets: CodeSnippet[] = [];
-
-  for (const file of files) {
-    // Top-level functions
-    for (const fn of file.functions) {
-      snippets.push({
-        name: fn.name,
-        code: fn.body || `function ${fn.name}${fn.params}`,
-        file: file.filePath,
-        startLine: fn.startLine,
-        endLine: fn.endLine,
-      });
-    }
-
-    // Class methods
-    for (const cls of file.classes) {
-      for (const method of cls.methods) {
-        snippets.push({
-          name: `${cls.name}.${method.name}`,
-          code: method.body || `${method.name}${method.params}`,
-          file: file.filePath,
-          startLine: method.startLine,
-          endLine: method.endLine,
-        });
-      }
-
-      // If the class has no methods but has properties, embed the class itself
-      if (cls.methods.length === 0) {
-        snippets.push({
-          name: cls.name,
-          code: `class ${cls.name}${cls.extends ? ` extends ${cls.extends}` : ""}`,
-          file: file.filePath,
-          startLine: cls.startLine,
-          endLine: cls.endLine,
-        });
-      }
-    }
-  }
-
-  return snippets;
-}
+// extractSnippets is imported from ../indexing/source-collector.ts
 
 // ---------------------------------------------------------------------------
 // Status management

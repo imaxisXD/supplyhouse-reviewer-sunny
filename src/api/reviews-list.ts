@@ -9,37 +9,59 @@ export const reviewsListRoutes = new Elysia({ prefix: "/api" })
   .get("/reviews", async ({ query }) => {
     const limit = Math.min(parseInt((query as Record<string, string>).limit ?? "50", 10), 200);
 
+    // UUID pattern to filter only review:<uuid> keys (not review:result:*, review:cancel:*, etc.)
+    const UUID_RE = /^review:([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})$/;
+
     try {
-      // Scan for review status keys
+      // Scan for review status keys (review:<uuid>)
       const keys: string[] = [];
       let cursor = "0";
       do {
-        const [nextCursor, batch] = await redis.scan(cursor, "MATCH", "review:result:*", "COUNT", 100);
+        const [nextCursor, batch] = await redis.scan(cursor, "MATCH", "review:*", "COUNT", 100);
         cursor = nextCursor;
-        keys.push(...batch);
-      } while (cursor !== "0" && keys.length < limit);
+        for (const key of batch) {
+          if (UUID_RE.test(key)) keys.push(key);
+        }
+      } while (cursor !== "0" && keys.length < limit * 3);
 
       const reviews = [];
-      for (const key of keys.slice(0, limit)) {
+      for (const key of keys.slice(0, limit * 2)) {
         try {
           const raw = await redis.get(key);
           if (!raw) continue;
-          const result = JSON.parse(raw);
-          const reviewId = key.replace("review:result:", "");
+          const status = JSON.parse(raw);
+          const reviewId = key.replace("review:", "");
 
-          // Get status for timing info
-          const statusRaw = await redis.get(`review:${reviewId}`);
-          const status = statusRaw ? JSON.parse(statusRaw) : {};
+          let totalFindings = status.findingsCount ?? (Array.isArray(status.findings) ? status.findings.length : 0);
+          let durationMs = 0;
+          let costUsd = 0;
+          let filesAnalyzed = 0;
+
+          // Enrich completed reviews with result data
+          if (status.phase === "complete") {
+            try {
+              const resultRaw = await redis.get(`review:result:${reviewId}`);
+              if (resultRaw) {
+                const result = JSON.parse(resultRaw);
+                totalFindings = result.summary?.totalFindings ?? totalFindings;
+                durationMs = result.summary?.durationMs ?? 0;
+                costUsd = result.summary?.costUsd ?? 0;
+                filesAnalyzed = result.summary?.filesAnalyzed ?? 0;
+              }
+            } catch { /* skip */ }
+          }
 
           reviews.push({
             id: reviewId,
-            phase: status.phase ?? "complete",
-            totalFindings: result.summary?.totalFindings ?? 0,
-            durationMs: result.summary?.durationMs ?? 0,
-            costUsd: result.summary?.costUsd ?? 0,
-            filesAnalyzed: result.summary?.filesAnalyzed ?? 0,
+            phase: status.phase ?? "queued",
+            totalFindings,
+            durationMs,
+            costUsd,
+            filesAnalyzed,
             startedAt: status.startedAt,
             completedAt: status.completedAt,
+            error: status.phase === "failed" ? status.error : undefined,
+            prUrl: status.prUrl,
           });
         } catch {
           // Skip unparseable entries
@@ -53,7 +75,7 @@ export const reviewsListRoutes = new Elysia({ prefix: "/api" })
         return dateB - dateA;
       });
 
-      return { reviews, total: reviews.length };
+      return { reviews: reviews.slice(0, limit), total: reviews.length };
     } catch (error) {
       log.error({ error: error instanceof Error ? error.message : String(error) }, "Failed to list reviews");
       return { reviews: [], total: 0 };

@@ -36,33 +36,47 @@ export const queryCallersTool = createTool({
   id: "query_callers",
   description:
     "Query the code graph for all functions that call a given function. " +
+    "Provide both the function name and the file path for accurate results. " +
     "Returns caller name, file path, definition line, and call-site line.",
   inputSchema: z.object({
-    functionName: z.string().describe("Qualified function name, e.g. 'UserService.getUser'"),
+    functionName: z.string().describe("Function name, e.g. 'getUser'"),
+    filePath: z.string().optional().describe("File path where the target function is defined, e.g. 'src/services/user.ts'"),
     repoId: z.string().optional().describe("Repository identifier (defaults to active repo context)"),
   }),
   outputSchema: z.object({
     callers: z.array(CallerRecord),
   }),
   execute: async (input) => {
-    const { functionName } = input;
+    const { functionName, filePath } = input;
     const repoId = input.repoId ?? getRepoContext()?.repoId;
-    log.debug({ functionName, repoId }, "Querying callers");
+    log.debug({ functionName, filePath, repoId }, "Querying callers");
 
     try {
       if (!repoId) {
         log.warn({ functionName }, "query_callers missing repoId");
         return { callers: [] };
       }
-      const records = await runCypher(
-        `MATCH (caller:Function)-[r:CALLS]->(target:Function {name: $name})
-         WHERE caller.repoId = $repoId
-         RETURN caller.name AS functionName,
-                caller.file AS filePath,
-                caller.startLine AS line,
-                r.line AS callLine`,
-        { name: functionName, repoId },
-      );
+
+      // When filePath is provided, filter target by both name and file for precision
+      const query = filePath
+        ? `MATCH (caller:Function)-[r:CALLS]->(target:Function {name: $name, file: $file})
+           WHERE caller.repoId = $repoId
+           RETURN caller.name AS functionName,
+                  caller.file AS filePath,
+                  caller.startLine AS line,
+                  r.line AS callLine`
+        : `MATCH (caller:Function)-[r:CALLS]->(target:Function {name: $name})
+           WHERE caller.repoId = $repoId
+           RETURN caller.name AS functionName,
+                  caller.file AS filePath,
+                  caller.startLine AS line,
+                  r.line AS callLine`;
+
+      const params = filePath
+        ? { name: functionName, file: filePath, repoId }
+        : { name: functionName, repoId };
+
+      const records = await runCypher(query, params);
 
       const callers = records.map((r) => ({
         functionName: r.get("functionName") as string,
@@ -73,7 +87,7 @@ export const queryCallersTool = createTool({
 
       return { callers };
     } catch (error) {
-      log.error({ error, functionName, repoId }, "Failed to query callers");
+      log.error({ error, functionName, filePath, repoId }, "Failed to query callers");
       return { callers: [] };
     }
   },
@@ -87,32 +101,43 @@ export const queryCalleesTool = createTool({
   id: "query_callees",
   description:
     "Query the code graph for all functions that a given function calls. " +
+    "Provide both the function name and the file path for accurate results. " +
     "Returns callee name, file path, and definition line.",
   inputSchema: z.object({
-    functionName: z.string().describe("Qualified function name"),
+    functionName: z.string().describe("Function name"),
+    filePath: z.string().optional().describe("File path where the source function is defined"),
     repoId: z.string().optional().describe("Repository identifier (defaults to active repo context)"),
   }),
   outputSchema: z.object({
     callees: z.array(CalleeRecord),
   }),
   execute: async (input) => {
-    const { functionName } = input;
+    const { functionName, filePath } = input;
     const repoId = input.repoId ?? getRepoContext()?.repoId;
-    log.debug({ functionName, repoId }, "Querying callees");
+    log.debug({ functionName, filePath, repoId }, "Querying callees");
 
     try {
       if (!repoId) {
         log.warn({ functionName }, "query_callees missing repoId");
         return { callees: [] };
       }
-      const records = await runCypher(
-        `MATCH (source:Function {name: $name})-[:CALLS]->(target:Function)
-         WHERE source.repoId = $repoId
-         RETURN target.name AS functionName,
-                target.file AS filePath,
-                target.startLine AS line`,
-        { name: functionName, repoId },
-      );
+
+      const query = filePath
+        ? `MATCH (source:Function {name: $name, file: $file, repoId: $repoId})-[:CALLS]->(target:Function)
+           RETURN target.name AS functionName,
+                  target.file AS filePath,
+                  target.startLine AS line`
+        : `MATCH (source:Function {name: $name})-[:CALLS]->(target:Function)
+           WHERE source.repoId = $repoId
+           RETURN target.name AS functionName,
+                  target.file AS filePath,
+                  target.startLine AS line`;
+
+      const params = filePath
+        ? { name: functionName, file: filePath, repoId }
+        : { name: functionName, repoId };
+
+      const records = await runCypher(query, params);
 
       const callees = records.map((r) => ({
         functionName: r.get("functionName") as string,
@@ -122,7 +147,7 @@ export const queryCalleesTool = createTool({
 
       return { callees };
     } catch (error) {
-      log.error({ error, functionName, repoId }, "Failed to query callees");
+      log.error({ error, functionName, filePath, repoId }, "Failed to query callees");
       return { callees: [] };
     }
   },
@@ -222,13 +247,13 @@ export const queryImpactTool = createTool({
           },
         };
       }
-      // Direct callers (1 hop)
+      // Direct callers (1 hop) — filter target by file + name for precision
       if (functionName) {
         const directRecords = await runCypher(
-          `MATCH (caller:Function)-[:CALLS]->(target:Function {name: $name})
+          `MATCH (caller:Function)-[:CALLS]->(target:Function {name: $name, file: $file})
            WHERE caller.repoId = $repoId
            RETURN caller.file AS filePath`,
-          { name: functionName, repoId },
+          { name: functionName, file: filePath, repoId },
         );
         directCallers = directRecords.length;
         for (const r of directRecords) {
@@ -237,10 +262,10 @@ export const queryImpactTool = createTool({
 
         // Indirect callers (2-3 hops)
         const indirectRecords = await runCypher(
-          `MATCH (caller:Function)-[:CALLS*2..3]->(target:Function {name: $name})
+          `MATCH (caller:Function)-[:CALLS*2..3]->(target:Function {name: $name, file: $file})
            WHERE caller.repoId = $repoId
            RETURN DISTINCT caller.file AS filePath`,
-          { name: functionName, repoId },
+          { name: functionName, file: filePath, repoId },
         );
         indirectCallers = indirectRecords.length;
         for (const r of indirectRecords) {

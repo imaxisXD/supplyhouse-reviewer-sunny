@@ -6,10 +6,18 @@ import { indexQueue } from "../queue/index-worker.ts";
 import { indexTokenKey, storeToken } from "../utils/token-store.ts";
 import { deriveRepoIdFromUrl } from "../utils/repo-identity.ts";
 import { indexCancelKey, markCancelled } from "../utils/cancellation.ts";
+import { getRepoMeta, listRepoMeta } from "../utils/repo-meta.ts";
 
 const log = createLogger("api:index");
 const FRAMEWORK_IDS = ["react", "typescript", "java", "spring-boot", "flutter", "ftl"] as const;
 const FrameworkSchema = t.Union(FRAMEWORK_IDS.map((id) => t.Literal(id)));
+const FRAMEWORK_SET = new Set<string>(FRAMEWORK_IDS);
+
+function normalizeFramework(value?: string): string | undefined {
+  if (!value) return undefined;
+  return FRAMEWORK_SET.has(value) ? value : undefined;
+}
+
 
 export const indexRoutes = new Elysia({ prefix: "/api/index" })
   .post(
@@ -34,6 +42,7 @@ export const indexRoutes = new Elysia({ prefix: "/api/index" })
         branch: body.branch ?? "main",
         tokenKey,
         framework: body.framework,
+        includeEmbeddings: body.includeEmbeddings ?? false,
         createdAt: new Date().toISOString(),
       };
 
@@ -45,6 +54,7 @@ export const indexRoutes = new Elysia({ prefix: "/api/index" })
         repoUrl: trimmedUrl,
         branch: body.branch ?? "main",
         framework: body.framework,
+        includeEmbeddings: body.includeEmbeddings ?? false,
         filesProcessed: 0,
         totalFiles: 0,
         functionsIndexed: 0,
@@ -53,7 +63,7 @@ export const indexRoutes = new Elysia({ prefix: "/api/index" })
 
       await indexQueue.add("index", job, { jobId: indexId });
 
-      log.info({ indexId, repoUrl: trimmedUrl }, "Indexing submitted");
+      log.info({ indexId, repoUrl: trimmedUrl, includeEmbeddings: body.includeEmbeddings ?? false }, "Indexing submitted");
 
       set.status = 201;
       return { indexId };
@@ -64,8 +74,81 @@ export const indexRoutes = new Elysia({ prefix: "/api/index" })
         token: t.String({ minLength: 1 }),
         branch: t.Optional(t.String()),
         framework: t.Optional(FrameworkSchema),
+        includeEmbeddings: t.Optional(t.Boolean()),
       }),
     }
+  )
+  .post(
+    "/force",
+    async ({ body, set }) => {
+      const trimmedToken = body.token.trim();
+      if (!trimmedToken) {
+        set.status = 400;
+        return { error: "Token must not be empty" };
+      }
+
+      log.info({ repoId: body.repoId, branch: body.branch, framework: body.framework }, "Force re-index requested");
+
+      let repoMeta = await getRepoMeta(body.repoId);
+      log.info(
+        { repoId: body.repoId, hasRepoMeta: !!repoMeta, repoUrl: repoMeta?.repoUrl },
+        "Force re-index repo metadata lookup",
+      );
+      if (!repoMeta?.repoUrl) {
+        set.status = 404;
+        return { error: "Repository metadata not found. Re-index from the Indexing page first." };
+      }
+
+      const indexId = randomUUID();
+      const tokenKey = indexTokenKey(indexId);
+      await storeToken(tokenKey, trimmedToken);
+
+      const repoUrl = repoMeta.repoUrl;
+      const repoId = body.repoId;
+      const frameworkOverride = normalizeFramework(body.framework) ?? normalizeFramework(repoMeta.framework);
+      const branch = body.branch ?? repoMeta.branch ?? "main";
+
+      const job = {
+        id: indexId,
+        repoUrl,
+        branch,
+        tokenKey,
+        framework: frameworkOverride,
+        includeEmbeddings: body.includeEmbeddings ?? false,
+        createdAt: new Date().toISOString(),
+      };
+
+      await redis.set(`index:${indexId}`, JSON.stringify({
+        id: indexId,
+        phase: "queued",
+        percentage: 0,
+        repoId,
+        repoUrl,
+        branch,
+        framework: frameworkOverride,
+        includeEmbeddings: body.includeEmbeddings ?? false,
+        filesProcessed: 0,
+        totalFiles: 0,
+        functionsIndexed: 0,
+        startedAt: new Date().toISOString(),
+      }));
+
+      await indexQueue.add("index", job, { jobId: indexId });
+
+      log.info({ indexId, repoId, repoUrl, includeEmbeddings: body.includeEmbeddings ?? false }, "Force re-indexing submitted");
+
+      set.status = 201;
+      return { indexId };
+    },
+    {
+      body: t.Object({
+        repoId: t.String({ minLength: 1 }),
+        token: t.String({ minLength: 1 }),
+        branch: t.Optional(t.String()),
+        framework: t.Optional(FrameworkSchema),
+        includeEmbeddings: t.Optional(t.Boolean()),
+      }),
+    },
   )
   .post(
     "/incremental",
@@ -96,6 +179,7 @@ export const indexRoutes = new Elysia({ prefix: "/api/index" })
         framework: body.framework,
         incremental: true,
         changedFiles: body.changedFiles,
+        includeEmbeddings: body.includeEmbeddings ?? false,
         createdAt: new Date().toISOString(),
       };
 
@@ -107,6 +191,7 @@ export const indexRoutes = new Elysia({ prefix: "/api/index" })
         repoUrl: trimmedUrl,
         branch: body.branch ?? "main",
         framework: body.framework,
+        includeEmbeddings: body.includeEmbeddings ?? false,
         filesProcessed: 0,
         totalFiles: body.changedFiles.length,
         functionsIndexed: 0,
@@ -115,7 +200,7 @@ export const indexRoutes = new Elysia({ prefix: "/api/index" })
 
       await indexQueue.add("index", job, { jobId: indexId });
 
-      log.info({ indexId, repoUrl: trimmedUrl, changedFiles: body.changedFiles.length }, "Incremental indexing submitted");
+      log.info({ indexId, repoUrl: trimmedUrl, changedFiles: body.changedFiles.length, includeEmbeddings: body.includeEmbeddings ?? false }, "Incremental indexing submitted");
 
       set.status = 201;
       return { indexId };
@@ -127,8 +212,27 @@ export const indexRoutes = new Elysia({ prefix: "/api/index" })
         branch: t.Optional(t.String()),
         framework: t.Optional(FrameworkSchema),
         changedFiles: t.Array(t.String({ minLength: 1 }), { minItems: 1 }),
+        includeEmbeddings: t.Optional(t.Boolean()),
       }),
     }
+  )
+  .get("/meta", async () => {
+    const items = await listRepoMeta();
+    return { items };
+  })
+  .get(
+    "/meta/:repoId",
+    async ({ params, set }) => {
+      const meta = await getRepoMeta(params.repoId);
+      if (!meta) {
+        set.status = 404;
+        return { error: "Repository metadata not found" };
+      }
+      return meta;
+    },
+    {
+      params: t.Object({ repoId: t.String({ minLength: 1 }) }),
+    },
   )
   .get("/:id/status", async ({ params, set }) => {
     const data = await redis.get(`index:${params.id}`);

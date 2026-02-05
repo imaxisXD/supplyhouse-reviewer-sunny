@@ -3,6 +3,7 @@ import { MODELS } from "../mastra/models.ts";
 import { grepCodebaseTool } from "../tools/search-tools.ts";
 import { searchSimilarTool } from "../tools/vector-tools.ts";
 import { readFileTool } from "../tools/code-tools.ts";
+import { normalizeToolNames } from "../tools/tool-normalization.ts";
 
 export const securityAgent = new Agent({
   id: "security-agent",
@@ -60,9 +61,14 @@ export const securityAgent = new Agent({
 3. When you find a potential issue, verify it is real by reading the full file context.
 4. Search the codebase for similar patterns that might indicate a systemic issue.
 
+## Evidence Requirements
+
+- Only report when you can show a **clear sink + untrusted source** path.
+- Do NOT report generic or speculative warnings (e.g. "possible XSS") without concrete evidence.
+
 ## Output Format
 
-Return your findings as a JSON object with a "findings" array. Each finding must have:
+Return your findings as a JSON object with a "findings" array. Each finding must include "lineId" (e.g. "L123") and "lineText" (the code text after the diff marker).
 
 \`\`\`json
 {
@@ -70,6 +76,8 @@ Return your findings as a JSON object with a "findings" array. Each finding must
     {
       "file": "path/to/file.ts",
       "line": 45,
+      "lineId": "L45",
+      "lineText": "db.query(\`SELECT * FROM users WHERE id = \${userId}\`)",
       "severity": "high",
       "category": "security",
       "title": "SQL Injection vulnerability",
@@ -104,9 +112,9 @@ Always include the relevant CWE ID when applicable:
 
 If no security issues are found, return {"findings": []}.`,
   model: MODELS.security,
-  tools: {
+  tools: normalizeToolNames({
     grep_codebase: grepCodebaseTool,
     search_similar: searchSimilarTool,
     read_file: readFileTool,
-  },
+  }),
 });

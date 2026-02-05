@@ -3,15 +3,15 @@ import { getReviewsList, getReviewResult } from "../api/client";
 import type { ReviewListItem, AgentTrace } from "../api/client";
 
 const STATUS_BAR_COLORS: Record<string, string> = {
-  success: "bg-green-600",
-  failed: "bg-red-600",
-  skipped: "bg-gray-600",
+  success: "bg-emerald-500",
+  failed: "bg-rose-500",
+  skipped: "bg-warm-300",
 };
 
 const STATUS_TEXT_COLORS: Record<string, string> = {
-  success: "text-green-400",
-  failed: "text-red-400",
-  skipped: "text-gray-400",
+  success: "text-emerald-700",
+  failed: "text-rose-700",
+  skipped: "text-ink-600",
 };
 
 export default function TraceViewer() {
@@ -54,22 +54,22 @@ export default function TraceViewer() {
     <div className="flex gap-6 min-h-[400px]">
       {/* Left panel - review list */}
       <div className="w-72 shrink-0">
-        <h3 className="text-sm font-medium text-gray-400 mb-3">Recent Reviews</h3>
+        <h3 className="text-sm font-medium text-ink-700 mb-3">Recent Reviews</h3>
         {loadingList && (
-          <p className="text-sm text-gray-600">Loading reviews...</p>
+          <p className="text-sm text-ink-600">Loading reviews...</p>
         )}
         {!loadingList && reviews.length === 0 && (
-          <p className="text-sm text-gray-600">No reviews found.</p>
+          <p className="text-sm text-ink-600">No reviews found.</p>
         )}
         <div className="space-y-1 max-h-[500px] overflow-y-auto">
           {reviews.map((review) => (
             <button
               key={review.id}
               onClick={() => handleSelectReview(review.id)}
-              className={`w-full text-left px-3 py-2.5 rounded-lg text-sm transition-colors ${
+              className={`w-full text-left px-3 py-2.5 text-sm transition-colors border ${
                 selectedId === review.id
-                  ? "bg-blue-900/40 border border-blue-800 text-blue-300"
-                  : "bg-gray-900 border border-gray-800 text-gray-300 hover:bg-gray-800/70"
+                  ? "bg-brand-500/10 border-brand-500/40 text-brand-700"
+                  : "bg-white border-ink-900 text-ink-700 hover:bg-warm-100"
               }`}
             >
               <div className="font-mono text-xs truncate">{review.id}</div>
@@ -77,20 +77,20 @@ export default function TraceViewer() {
                 <span
                   className={`text-xs ${
                     review.phase === "complete"
-                      ? "text-green-400"
+                      ? "text-emerald-700"
                       : review.phase === "failed"
-                      ? "text-red-400"
-                      : "text-blue-400"
+                      ? "text-rose-700"
+                      : "text-brand-600"
                   }`}
                 >
                   {review.phase}
                 </span>
-                <span className="text-xs text-gray-500">
+                <span className="text-xs text-ink-600">
                   {review.totalFindings} findings
                 </span>
               </div>
-              <div className="text-xs text-gray-600 mt-0.5">
-                {new Date(review.startedAt).toLocaleDateString()}{" "}
+              <div className="text-xs text-ink-500 mt-0.5">
+                {new Date(review.startedAt).toLocaleDateString()} {" "}
                 {new Date(review.startedAt).toLocaleTimeString()}
               </div>
             </button>
@@ -100,28 +100,28 @@ export default function TraceViewer() {
 
       {/* Right panel - waterfall trace view */}
       <div className="flex-1 min-w-0">
-        <h3 className="text-sm font-medium text-gray-400 mb-3">Agent Trace Waterfall</h3>
+        <h3 className="text-sm font-medium text-ink-700 mb-3">Agent Trace Waterfall</h3>
 
         {!selectedId && (
-          <div className="flex items-center justify-center h-64 text-gray-600 text-sm">
+          <div className="flex items-center justify-center h-64 text-ink-600 text-sm">
             Select a review from the left panel to view its agent traces.
           </div>
         )}
 
         {selectedId && loadingTraces && (
-          <div className="flex items-center justify-center h-64 text-gray-500 text-sm">
+          <div className="flex items-center justify-center h-64 text-ink-600 text-sm">
             Loading traces...
           </div>
         )}
 
         {error && (
-          <div className="p-3 bg-red-900/30 border border-red-800 rounded-lg text-sm text-red-300 mb-4">
+          <div className="p-3 bg-rose-50 border border-rose-300/70 text-sm text-rose-700 mb-4">
             {error}
           </div>
         )}
 
         {selectedId && !loadingTraces && traces.length === 0 && !error && (
-          <div className="flex items-center justify-center h-64 text-gray-600 text-sm">
+          <div className="flex items-center justify-center h-64 text-ink-600 text-sm">
             No traces available for this review.
           </div>
         )}
@@ -134,20 +134,20 @@ export default function TraceViewer() {
               return (
                 <div
                   key={trace.agent}
-                  className="bg-gray-900 border border-gray-800 rounded-lg p-3"
+                  className="bg-white border border-ink-900 p-3"
                 >
                   <div className="flex items-center justify-between mb-2">
                     <div className="flex items-center gap-2">
-                      <span className="text-sm font-medium text-gray-200">
+                      <span className="text-sm font-medium text-ink-900">
                         {trace.agent}
                       </span>
                       <span
-                        className={`text-xs ${STATUS_TEXT_COLORS[trace.status] ?? "text-gray-400"}`}
+                        className={`text-xs ${STATUS_TEXT_COLORS[trace.status] ?? "text-ink-600"}`}
                       >
                         {trace.status}
                       </span>
                     </div>
-                    <div className="flex items-center gap-4 text-xs text-gray-500">
+                    <div className="flex items-center gap-4 text-xs text-ink-600">
                       <span>
                         {(trace.durationMs / 1000).toFixed(1)}s
                       </span>
@@ -157,10 +157,10 @@ export default function TraceViewer() {
                       <span>${trace.costUsd.toFixed(4)}</span>
                     </div>
                   </div>
-                  <div className="w-full h-4 bg-gray-800 rounded overflow-hidden">
+                  <div className="w-full h-4 bg-warm-200 overflow-hidden">
                     <div
-                      className={`h-full rounded transition-all duration-500 ${
-                        STATUS_BAR_COLORS[trace.status] ?? "bg-gray-600"
+                      className={`h-full transition-all duration-500 ${
+                        STATUS_BAR_COLORS[trace.status] ?? "bg-warm-300"
                       }`}
                       style={{ width: `${widthPercent}%` }}
                     />
