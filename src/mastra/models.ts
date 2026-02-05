@@ -13,6 +13,10 @@ export const MODELS = {
   refactor: "openrouter/moonshotai/kimi-k2.5",
   planner: "openrouter/moonshotai/kimi-k2.5",
   synthesis: "openrouter/moonshotai/kimi-k2.5",
+  // Completeness agent - finds MISSING controls (uses same model as logic for reasoning)
+  discovery: "openrouter/moonshotai/kimi-k2.5",
+  // Verification agent - disproves findings (fast model for cost efficiency)
+  verification: "openrouter/google/gemini-3-flash-preview",
 } as const;
 
 export type ModelRole = keyof typeof MODELS;

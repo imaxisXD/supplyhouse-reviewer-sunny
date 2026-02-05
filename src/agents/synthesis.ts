@@ -15,10 +15,12 @@ Multiple agents may find the same issue from different angles. For example:
 - The API Change agent and the Logic agent may both notice a return type mismatch.
 
 **Rules:**
-- If two findings point to the same file and line (within 3 lines), and describe the same root cause, merge them into one finding.
-- Keep the version with the highest confidence score.
-- Combine descriptions from both findings to give a more complete picture.
-- Preserve the most severe category (security > bug > api-change > duplication > refactor).
+- Only merge findings if they describe the EXACT SAME root cause (not just same line)
+- NEVER merge findings from different categories (e.g., don't merge a security XSS finding with a bug syntax error)
+- Same line does NOT mean same issue - a line can have multiple distinct problems
+- If two findings point to the same line but describe different issues (e.g., XSS vulnerability AND syntax typo), keep BOTH findings
+- Only merge if: same file, same line (within 3 lines), same category, and genuinely the same underlying problem
+- When merging: keep version with highest confidence, combine descriptions, preserve most severe category
 
 ### 2. Conflict Resolution
 

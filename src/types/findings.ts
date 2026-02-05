@@ -25,6 +25,10 @@ export interface Finding {
     line: number;
     usage: string;
   }[];
+  // Verification status - set by verification agent
+  disproven?: boolean;
+  disprovenReason?: string;
+  verificationNotes?: string;
 }
 
 export interface AgentTrace {
@@ -44,8 +48,10 @@ export interface AgentTrace {
 
 export interface ReviewResult {
   findings: Finding[];
+  disprovenFindings?: Finding[]; // Findings disproven by verification agent
   summary: {
     totalFindings: number;
+    disprovenCount?: number; // Count of false positives removed
     bySeverity: Record<Severity, number>;
     byCategory: Record<Category, number>;
     filesAnalyzed: number;

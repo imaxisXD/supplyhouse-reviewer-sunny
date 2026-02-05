@@ -62,6 +62,32 @@ export const apiChangeAgent = new Agent({
 4. **Search For Stale Usages**: Use grep_codebase or find_usages to find any remaining references to old names/types.
 5. **Assess Impact**: Use query_impact for high-level impact assessment.
 
+## Multi-Hop Impact Analysis (IMPORTANT)
+
+When a function signature or behavior changes, use query_impact to find ALL affected code, not just direct callers:
+
+### Understanding Hop Distances
+- **1 hop (direct callers)**: Functions that directly call the changed function. HIGH confidence these will break.
+- **2 hops (indirect callers)**: Functions that call a function that calls the changed function. MEDIUM confidence - might break if they depend on return values passed through.
+- **3 hops (transitive callers)**: Functions 3 levels up. LOW confidence - mention as potential issue if return value propagates.
+
+### When to Use Multi-Hop Analysis
+1. **Return type changes**: If function A calls B which calls C, and C's return type changes, both A and B might be affected if they use that return value.
+2. **Exception changes**: If a function now throws where it returned null, all callers in the chain might need try/catch.
+3. **Async/await changes**: If a sync function becomes async, all callers up the chain need updating.
+
+### Example Workflow
+1. Function getUser() return type changes: { email } → { contactInfo: { email } }
+2. query_impact("src/user.ts", "getUser") returns:
+   - directCallers: 4
+   - indirectCallers: 8
+   - affectedPaths: ["src/api/users.ts", "src/services/notification.ts", ...]
+3. For each affected file in 1-2 hops, read_file and check if they access the old .email property
+4. Report with confidence based on hop distance:
+   - 1 hop + confirmed usage of old shape → HIGH confidence
+   - 2 hops + might propagate → MEDIUM confidence
+   - 3 hops → LOW confidence, mention as "potential ripple effect"
+
 ## Evidence Requirements
 
 - Always use **query_callers** or **find_usages** for any API-change finding.

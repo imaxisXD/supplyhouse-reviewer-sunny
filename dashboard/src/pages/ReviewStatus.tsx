@@ -277,7 +277,7 @@ export default function ReviewStatus() {
 
         {status.agentsRunning && status.agentsRunning.length > 0 && (
           <div>
-            <p className="text-sm text-ink-700 mb-2">Active Agents</p>
+            <p className="text-sm text-ink-700 mb-2"> [Active Agents]</p>
             <div className="flex gap-2 flex-wrap">
               {status.agentsRunning.map((agent) => (
                 <span

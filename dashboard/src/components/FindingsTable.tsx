@@ -11,9 +11,10 @@ const SEVERITY_COLORS: Record<string, string> = {
 
 interface FindingsTableProps {
   findings: Finding[];
+  showDisprovenReason?: boolean;
 }
 
-export default function FindingsTable({ findings }: FindingsTableProps) {
+export default function FindingsTable({ findings, showDisprovenReason }: FindingsTableProps) {
   const [filter, setFilter] = useState<string>("all");
   const [expanded, setExpanded] = useState<Set<string>>(new Set());
 
@@ -73,6 +74,11 @@ export default function FindingsTable({ findings }: FindingsTableProps) {
               >
                 {finding.severity}
               </span>
+              {finding.disproven && (
+                <span className="px-2 py-0.5 text-xs border bg-rose-50 text-rose-600 border-rose-300">
+                  disproven
+                </span>
+              )}
               <span className="text-sm text-ink-900 flex-1">{finding.title}</span>
               <span className="text-xs text-ink-600 font-mono">
                 {finding.file}:{finding.line}
@@ -82,6 +88,12 @@ export default function FindingsTable({ findings }: FindingsTableProps) {
             {expanded.has(key) && (
               <div className="px-4 pb-4 border-t border-ink-900">
                 <p className="text-sm text-ink-700 mt-3">{finding.description}</p>
+                {showDisprovenReason && finding.disprovenReason && (
+                  <div className="mt-3 p-3 bg-rose-50 border border-rose-200">
+                    <p className="text-xs text-rose-600 mb-1">Reason for Removal</p>
+                    <p className="text-sm text-rose-800">{finding.disprovenReason}</p>
+                  </div>
+                )}
                 {finding.suggestion && (
                 <div className="mt-3 p-3 bg-warm-50 border border-ink-900">
                     <p className="text-xs text-ink-600 mb-1">Suggestion</p>

@@ -169,8 +169,9 @@ async function processIndexJob(job: IndexJob): Promise<void> {
     if (!token) {
       throw new Error("Bitbucket token not available for index job");
     }
-    if (!env.VOYAGE_API_KEY) {
-      throw new Error("VOYAGE_API_KEY is required to index repositories");
+    // Only require VOYAGE_API_KEY if embeddings are requested
+    if (job.includeEmbeddings && !env.VOYAGE_API_KEY) {
+      throw new Error("VOYAGE_API_KEY is required when includeEmbeddings is enabled");
     }
     await assertNotCancelled(cancelKey, "Index job cancelled");
     // ---- Step 1: Clone --------------------------------------------------
@@ -295,21 +296,26 @@ async function processIndexJob(job: IndexJob): Promise<void> {
     await updateStatus(jobId, "building-graph", 75);
     await assertNotCancelled(cancelKey, "Index job cancelled");
 
-    // ---- Step 5: Generate embeddings ------------------------------------
-    await updateStatus(jobId, "generating-embeddings", 78);
-    await assertNotCancelled(cancelKey, "Index job cancelled");
-    let snippets = extractSnippets(parsedFiles);
-    if (isOfbiz) {
-      snippets = snippets.filter((s) => !s.file.toLowerCase().endsWith(".ftl"));
+    // ---- Step 5: Generate embeddings (OPTIONAL) --------------------------
+    let embeddingsStored = 0;
+    if (job.includeEmbeddings) {
+      await updateStatus(jobId, "generating-embeddings", 78);
+      await assertNotCancelled(cancelKey, "Index job cancelled");
+      let snippets = extractSnippets(parsedFiles);
+      if (isOfbiz) {
+        snippets = snippets.filter((s) => !s.file.toLowerCase().endsWith(".ftl"));
+      }
+      if (isOfbiz && ofbizData) {
+        snippets.push(...extractOfbizSnippets(cloneDir, ofbizData));
+      }
+      embeddingsStored = await generateAndStoreEmbeddings(repoId, snippets);
+      await updateStatus(jobId, "generating-embeddings", 95, {
+        functionsIndexed: embeddingsStored,
+      });
+      await assertNotCancelled(cancelKey, "Index job cancelled");
+    } else {
+      sessionLog.info({ jobId }, "Skipping embedding generation (not enabled)");
     }
-    if (isOfbiz && ofbizData) {
-      snippets.push(...extractOfbizSnippets(cloneDir, ofbizData));
-    }
-    const embeddingsStored = await generateAndStoreEmbeddings(repoId, snippets);
-    await updateStatus(jobId, "generating-embeddings", 95, {
-      functionsIndexed: embeddingsStored,
-    });
-    await assertNotCancelled(cancelKey, "Index job cancelled");
 
     // ---- Done -----------------------------------------------------------
     try {
@@ -333,6 +339,7 @@ async function processIndexJob(job: IndexJob): Promise<void> {
         framework: primaryFramework,
         files: parsedFiles.length,
         embeddings: embeddingsStored,
+        embeddingsEnabled: !!job.includeEmbeddings,
         incremental: !!job.incremental,
       },
       "Index session completed",

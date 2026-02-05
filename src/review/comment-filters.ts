@@ -156,9 +156,17 @@ export function filterFindingsForQuality(
 }
 
 export function filterFindingsForInline(findings: Finding[]): Finding[] {
-  return findings.filter((finding) => (
-    finding.severity === "critical" || finding.severity === "high" || finding.severity === "medium"
-  ));
+  return findings.filter((finding) => {
+    // Always include critical/high/medium
+    if (finding.severity === "critical" || finding.severity === "high" || finding.severity === "medium") {
+      return true;
+    }
+    // Include low severity bugs with high confidence (they're real issues)
+    if (finding.severity === "low" && finding.category === "bug" && (finding.confidence ?? 0) >= 0.8) {
+      return true;
+    }
+    return false;
+  });
 }
 
 export function resolveCommentLine(

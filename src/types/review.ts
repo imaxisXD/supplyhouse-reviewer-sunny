@@ -4,8 +4,10 @@ export type ReviewPhase =
   | "queued"
   | "fetching-pr"
   | "indexing"
+  | "validating-syntax"      // NEW: Pre-agent syntax validation
   | "building-context"
   | "running-agents"
+  | "verifying-findings"     // NEW: Verify findings to disprove false positives
   | "synthesizing"
   | "posting-comments"
   | "cancelling"
@@ -26,6 +28,7 @@ export interface ReviewJob {
     skipSecurity?: boolean;
     skipDuplication?: boolean;
     priorityFiles?: string[];
+    useEmbeddings?: boolean; // opt-in to use embeddings if available
   };
   createdAt: string;
 }

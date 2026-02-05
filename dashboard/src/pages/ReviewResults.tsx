@@ -129,7 +129,7 @@ export default function ReviewResults() {
         </div>
       </div>
 
-      <div className="grid grid-cols-2 gap-3 sm:grid-cols-5">
+      <div className="grid grid-cols-2 gap-3 sm:grid-cols-6">
         <div className={statCardClass}>
           <p className={statLabelClass}>Total Findings</p>
           <p className={statValueClass}>{summary.totalFindings}</p>
@@ -150,6 +150,12 @@ export default function ReviewResults() {
             </div>
           );
         })}
+        {summary.disprovenCount !== undefined && summary.disprovenCount > 0 && (
+          <div className={statCardClass}>
+            <p className={statLabelClass}>False Positives</p>
+            <p className={`${statValueClass} text-rose-500`}>{summary.disprovenCount}</p>
+          </div>
+        )}
       </div>
 
       <div className="grid grid-cols-1 gap-3 sm:grid-cols-3">
@@ -197,6 +203,23 @@ export default function ReviewResults() {
         <h2 className="text-lg font-semibold text-ink-950">Findings</h2>
         <FindingsTable findings={result.findings} />
       </div>
+
+      {result.disprovenFindings && result.disprovenFindings.length > 0 && (
+        <div className="space-y-4">
+          <div className="flex items-center gap-3">
+            <h2 className="text-lg font-semibold text-ink-950">Disproven Findings</h2>
+            <span className="inline-flex items-center gap-1.5 px-2 py-0.5 text-xs font-medium bg-rose-100 text-rose-700 border border-rose-200">
+              {result.disprovenFindings.length} false positive{result.disprovenFindings.length !== 1 ? "s" : ""} removed
+            </span>
+          </div>
+          <p className="text-sm text-ink-600">
+            These findings were automatically identified as false positives by the verification agent and were not posted as comments.
+          </p>
+          <div className="opacity-75">
+            <FindingsTable findings={result.disprovenFindings} showDisprovenReason />
+          </div>
+        </div>
+      )}
 
       {result.traces && result.traces.length > 0 && (
         <div className="space-y-4">

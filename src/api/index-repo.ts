@@ -42,6 +42,7 @@ export const indexRoutes = new Elysia({ prefix: "/api/index" })
         branch: body.branch ?? "main",
         tokenKey,
         framework: body.framework,
+        includeEmbeddings: body.includeEmbeddings ?? false,
         createdAt: new Date().toISOString(),
       };
 
@@ -53,6 +54,7 @@ export const indexRoutes = new Elysia({ prefix: "/api/index" })
         repoUrl: trimmedUrl,
         branch: body.branch ?? "main",
         framework: body.framework,
+        includeEmbeddings: body.includeEmbeddings ?? false,
         filesProcessed: 0,
         totalFiles: 0,
         functionsIndexed: 0,
@@ -61,7 +63,7 @@ export const indexRoutes = new Elysia({ prefix: "/api/index" })
 
       await indexQueue.add("index", job, { jobId: indexId });
 
-      log.info({ indexId, repoUrl: trimmedUrl }, "Indexing submitted");
+      log.info({ indexId, repoUrl: trimmedUrl, includeEmbeddings: body.includeEmbeddings ?? false }, "Indexing submitted");
 
       set.status = 201;
       return { indexId };
@@ -72,6 +74,7 @@ export const indexRoutes = new Elysia({ prefix: "/api/index" })
         token: t.String({ minLength: 1 }),
         branch: t.Optional(t.String()),
         framework: t.Optional(FrameworkSchema),
+        includeEmbeddings: t.Optional(t.Boolean()),
       }),
     }
   )
@@ -111,6 +114,7 @@ export const indexRoutes = new Elysia({ prefix: "/api/index" })
         branch,
         tokenKey,
         framework: frameworkOverride,
+        includeEmbeddings: body.includeEmbeddings ?? false,
         createdAt: new Date().toISOString(),
       };
 
@@ -122,6 +126,7 @@ export const indexRoutes = new Elysia({ prefix: "/api/index" })
         repoUrl,
         branch,
         framework: frameworkOverride,
+        includeEmbeddings: body.includeEmbeddings ?? false,
         filesProcessed: 0,
         totalFiles: 0,
         functionsIndexed: 0,
@@ -130,7 +135,7 @@ export const indexRoutes = new Elysia({ prefix: "/api/index" })
 
       await indexQueue.add("index", job, { jobId: indexId });
 
-      log.info({ indexId, repoId, repoUrl }, "Force re-indexing submitted");
+      log.info({ indexId, repoId, repoUrl, includeEmbeddings: body.includeEmbeddings ?? false }, "Force re-indexing submitted");
 
       set.status = 201;
       return { indexId };
@@ -141,6 +146,7 @@ export const indexRoutes = new Elysia({ prefix: "/api/index" })
         token: t.String({ minLength: 1 }),
         branch: t.Optional(t.String()),
         framework: t.Optional(FrameworkSchema),
+        includeEmbeddings: t.Optional(t.Boolean()),
       }),
     },
   )
@@ -173,6 +179,7 @@ export const indexRoutes = new Elysia({ prefix: "/api/index" })
         framework: body.framework,
         incremental: true,
         changedFiles: body.changedFiles,
+        includeEmbeddings: body.includeEmbeddings ?? false,
         createdAt: new Date().toISOString(),
       };
 
@@ -184,6 +191,7 @@ export const indexRoutes = new Elysia({ prefix: "/api/index" })
         repoUrl: trimmedUrl,
         branch: body.branch ?? "main",
         framework: body.framework,
+        includeEmbeddings: body.includeEmbeddings ?? false,
         filesProcessed: 0,
         totalFiles: body.changedFiles.length,
         functionsIndexed: 0,
@@ -192,7 +200,7 @@ export const indexRoutes = new Elysia({ prefix: "/api/index" })
 
       await indexQueue.add("index", job, { jobId: indexId });
 
-      log.info({ indexId, repoUrl: trimmedUrl, changedFiles: body.changedFiles.length }, "Incremental indexing submitted");
+      log.info({ indexId, repoUrl: trimmedUrl, changedFiles: body.changedFiles.length, includeEmbeddings: body.includeEmbeddings ?? false }, "Incremental indexing submitted");
 
       set.status = 201;
       return { indexId };
@@ -204,6 +212,7 @@ export const indexRoutes = new Elysia({ prefix: "/api/index" })
         branch: t.Optional(t.String()),
         framework: t.Optional(FrameworkSchema),
         changedFiles: t.Array(t.String({ minLength: 1 }), { minItems: 1 }),
+        includeEmbeddings: t.Optional(t.Boolean()),
       }),
     }
   )

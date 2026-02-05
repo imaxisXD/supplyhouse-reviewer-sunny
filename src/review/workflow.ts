@@ -24,7 +24,13 @@ import {
   refactorAgent,
   plannerAgent,
   synthesisAgent,
+  completenessAgent,
+  verificationAgent,
 } from "../mastra/index.ts";
+import { duplicationGrepAgent } from "../agents/duplication-grep.ts";
+import { checkEmbeddingAvailability } from "../utils/embedding-availability.ts";
+import { runSyntaxValidation, filterSyntaxFindingsToChangedLines } from "./syntax-validators.ts";
+import { runWithRepoContext as dataFlowContext } from "../tools/repo-context.ts";
 import { runWithRepoContext } from "../tools/repo-context.ts";
 import { repoIdFromSlug } from "../utils/repo-identity.ts";
 import type { ParsedFile } from "../indexing/parsers/base.ts";
@@ -337,6 +343,7 @@ async function indexRepoIfNeeded(
   reviewId: string,
   cancelKey: string,
   changedFiles: string[],
+  useEmbeddings: boolean,
 ): Promise<boolean> {
   const strategyId = getIndexingStrategyId(repoId);
   const isOfbiz = strategyId === "ofbiz-supplyhouse";
@@ -462,17 +469,23 @@ async function indexRepoIfNeeded(
   await updateStatus(reviewId, "indexing", 19);
   await assertNotCancelled(cancelKey, "Review cancelled");
 
-  let snippets = extractSnippets(parsedFiles);
-  if (isOfbiz) {
-    snippets = snippets.filter((s) => !s.file.toLowerCase().endsWith(".ftl"));
+  // Only generate embeddings if useEmbeddings is enabled
+  if (useEmbeddings) {
+    let snippets = extractSnippets(parsedFiles);
+    if (isOfbiz) {
+      snippets = snippets.filter((s) => !s.file.toLowerCase().endsWith(".ftl"));
+    }
+    if (isOfbiz && ofbizData) {
+      snippets.push(...extractOfbizSnippets(repoPath, ofbizData));
+    }
+    const stored = await generateAndStoreEmbeddings(repoId, snippets);
+    invalidateCollectionCache(repoId);
+    await emitActivity(reviewId, `Generated ${stored} embeddings`);
+    log.info({ repoId, files: parsedFiles.length, embeddings: stored }, "Auto-indexing complete");
+  } else {
+    await emitActivity(reviewId, "Graph-only indexing complete (embeddings skipped)");
+    log.info({ repoId, files: parsedFiles.length }, "Auto-indexing complete (graph only)");
   }
-  if (isOfbiz && ofbizData) {
-    snippets.push(...extractOfbizSnippets(repoPath, ofbizData));
-  }
-  const stored = await generateAndStoreEmbeddings(repoId, snippets);
-  invalidateCollectionCache(repoId);
-  await emitActivity(reviewId, `Generated ${stored} embeddings`);
-  log.info({ repoId, files: parsedFiles.length, embeddings: stored }, "Auto-indexing complete");
   await updateStatus(reviewId, "indexing", 20);
   return true;
 }
@@ -503,7 +516,17 @@ export async function executeReview(job: ReviewJob, sessionLogger?: Logger): Pro
   let startedCommentId: string | null = null;
   let prDetails: PRDetails | undefined;
 
-  log.info({ reviewId, workspace, repoSlug, prNumber, degradation }, "Starting review");
+  // Check if embeddings are requested and available
+  const useEmbeddings = job.options?.useEmbeddings ?? false;
+  const repoId = repoIdFromSlug(workspace, repoSlug);
+  let embeddingStatus = { available: false, pointsCount: 0, collectionExists: false };
+  if (useEmbeddings && !degradation.noVectors && !degradation.noEmbeddings) {
+    embeddingStatus = await checkEmbeddingAvailability(repoId);
+  }
+  // Note: hasEmbeddings may be recalculated after indexing if embeddings were generated
+  let hasEmbeddings = useEmbeddings && embeddingStatus.available;
+
+  log.info({ reviewId, workspace, repoSlug, prNumber, degradation, useEmbeddings, hasEmbeddings }, "Starting review");
 
   try {
     if (job.tokenKey) {
@@ -616,7 +639,14 @@ export async function executeReview(job: ReviewJob, sessionLogger?: Logger): Pro
     const changedFiles = diffFiles
       .filter((f) => f.status !== "deleted")
       .map((f) => f.path);
-    const didIndex = await indexRepoIfNeeded(repoId, repoPath, reviewId, cancelKey, changedFiles);
+    const didIndex = await indexRepoIfNeeded(repoId, repoPath, reviewId, cancelKey, changedFiles, useEmbeddings);
+
+    // Recalculate embedding availability if we just indexed with embeddings
+    if (didIndex && useEmbeddings && !hasEmbeddings) {
+      const updatedStatus = await checkEmbeddingAvailability(repoId);
+      hasEmbeddings = updatedStatus.available;
+      log.info({ reviewId, hasEmbeddings, pointsCount: updatedStatus.pointsCount }, "Rechecked embedding availability after indexing");
+    }
 
     // ------------------------------------------------------------------
     // Step 2.8: Load repo strategy profile + domain facts
@@ -680,7 +710,7 @@ export async function executeReview(job: ReviewJob, sessionLogger?: Logger): Pro
       },
       {
         skipGraph: degradation.noGraph,
-        skipVectors: degradation.noVectors || degradation.noEmbeddings,
+        skipVectors: !hasEmbeddings || degradation.noVectors || degradation.noEmbeddings,
         domainFactsByFile: domainFactsIndex.byFile,
         repoStrategyProfile: strategyProfile,
       },
@@ -697,12 +727,31 @@ export async function executeReview(job: ReviewJob, sessionLogger?: Logger): Pro
     await assertNotCancelled(cancelKey, "Review cancelled");
 
     // ------------------------------------------------------------------
+    // Step 3.5: Syntax Validation (pre-agent, no LLM needed)
+    // ------------------------------------------------------------------
+    await updateStatus(reviewId, "validating-syntax", 42);
+    await emitActivity(reviewId, "Running syntax validation...");
+
+    const syntaxFindings = runSyntaxValidation(repoPath, diffFiles);
+    const filteredSyntaxFindings = filterSyntaxFindingsToChangedLines(syntaxFindings, diffFiles);
+
+    if (filteredSyntaxFindings.length > 0) {
+      await emitActivity(reviewId, `Found ${filteredSyntaxFindings.length} syntax issue(s)`);
+      log.info(
+        { reviewId, syntaxFindings: filteredSyntaxFindings.length },
+        "Syntax validation complete",
+      );
+    }
+    await assertNotCancelled(cancelKey, "Review cancelled");
+
+    // ------------------------------------------------------------------
     // Step 4: Run agents
     // ------------------------------------------------------------------
     await updateStatus(reviewId, "running-agents", 45);
     await assertNotCancelled(cancelKey, "Review cancelled");
     log.info({ reviewId }, "Running analysis agents");
 
+    const agentsStart = Date.now();
     const { findings: agentFindings, traces } = await runAgents(
       reviewId,
       contextPackages,
@@ -710,9 +759,16 @@ export async function executeReview(job: ReviewJob, sessionLogger?: Logger): Pro
       job,
       { repoId, repoPath },
       cancelKey,
+      hasEmbeddings,
       { prFacts, plannerNotes: combinedPlannerNotes },
     );
-    const combinedFindings = agentFindings;
+    const agentsDurationMs = Date.now() - agentsStart;
+    log.info(
+      { reviewId, durationMs: agentsDurationMs, findings: agentFindings.length, traces: traces.length },
+      "Analysis agents completed",
+    );
+    // Combine syntax findings with agent findings
+    const combinedFindings = [...filteredSyntaxFindings, ...agentFindings];
     const diffMap = new Map<string, DiffFile>();
     for (const diffFile of diffFiles) {
       diffMap.set(diffFile.path, diffFile);
@@ -731,7 +787,65 @@ export async function executeReview(job: ReviewJob, sessionLogger?: Logger): Pro
       domainFactsByFile: domainFactsIndex.byFile,
       strategyId: strategyProfile?.strategyId,
     });
-    const { findings: verifiedFindings, suppressed } = suppressMoveFalsePositives(gatedFindings, diffIndex);
+    const { findings: moveVerifiedFindings, suppressed } = suppressMoveFalsePositives(gatedFindings, diffIndex);
+
+    // ------------------------------------------------------------------
+    // Step 4.5: Verification Phase - Disprove False Positives
+    // ------------------------------------------------------------------
+    let verifiedFindings = moveVerifiedFindings;
+    let disprovenFindings: Finding[] = [];
+    let disprovenCount = 0;
+
+    // Only run verification if we have findings and LLM is available
+    if (moveVerifiedFindings.length > 0 && !degradation.slowLlm) {
+      await updateStatus(reviewId, "verifying-findings", 72, moveVerifiedFindings);
+      await emitActivity(reviewId, `Verifying ${moveVerifiedFindings.length} finding(s)...`);
+      await assertNotCancelled(cancelKey, "Review cancelled");
+
+      try {
+        const verificationStart = Date.now();
+        log.info(
+          { reviewId, original: moveVerifiedFindings.length },
+          "Verification phase started",
+        );
+        const verificationResult = await runVerificationPhase(
+          reviewId,
+          moveVerifiedFindings,
+          { repoId, repoPath },
+          cancelKey,
+        );
+
+        verifiedFindings = verificationResult.verifiedFindings;
+        disprovenFindings = verificationResult.disprovenFindings;
+        disprovenCount = verificationResult.disprovenCount;
+        const verificationDurationMs = Date.now() - verificationStart;
+        log.info(
+          {
+            reviewId,
+            durationMs: verificationDurationMs,
+            original: moveVerifiedFindings.length,
+            verified: verifiedFindings.length,
+            disproven: disprovenCount,
+          },
+          "Verification phase finished",
+        );
+
+        if (disprovenCount > 0) {
+          await emitActivity(reviewId, `Verification complete: ${disprovenCount} false positive(s) removed`);
+          log.info(
+            { reviewId, original: moveVerifiedFindings.length, verified: verifiedFindings.length, disproven: disprovenCount },
+            "Verification phase complete",
+          );
+        }
+      } catch (error) {
+        // Verification is optional - if it fails, continue with unverified findings
+        log.warn(
+          { reviewId, error: error instanceof Error ? error.message : String(error) },
+          "Verification phase failed, continuing with unverified findings",
+        );
+        verifiedFindings = moveVerifiedFindings;
+      }
+    }
 
     const inlineFindings = filterFindingsForInline(verifiedFindings);
     const inlineSuppressed = Math.max(verifiedFindings.length - inlineFindings.length, 0);
@@ -773,9 +887,21 @@ export async function executeReview(job: ReviewJob, sessionLogger?: Logger): Pro
       additions: f.additions,
       deletions: f.deletions,
     }));
+    const synthesisStart = Date.now();
+    log.info({ reviewId, findings: verifiedFindings.length }, "Synthesis started");
     const synthesis = await synthesizeFindings(
       reviewId, verifiedFindings, degradation,
       prDetails?.title, prDetails?.description, diffFilesMeta,
+    );
+    const synthesisDurationMs = Date.now() - synthesisStart;
+    log.info(
+      {
+        reviewId,
+        durationMs: synthesisDurationMs,
+        findings: synthesis.findings.length,
+        inlineComments: synthesis.inlineComments?.length ?? 0,
+      },
+      "Synthesis finished",
     );
     await assertNotCancelled(cancelKey, "Review cancelled");
     const findings = synthesis.findings.length > 0 ? synthesis.findings : verifiedFindings;
@@ -796,10 +922,17 @@ export async function executeReview(job: ReviewJob, sessionLogger?: Logger): Pro
     } else if (cancelled) {
       log.info({ reviewId }, "Skipping comment posting (review cancelled)");
     } else {
+      const postStart = Date.now();
+      log.info({ reviewId, findings: findings.length }, "Posting comments started");
       await updateStatus(reviewId, "posting-comments", 90, findings);
       commentsPosted = await postFindings(
         workspace, repoSlug, prNumber, tokenValue, findings, summary,
         synthesis, repoPath, diffFiles, cancelKey, traces, reviewId, inlineFindings,
+      );
+      const postDurationMs = Date.now() - postStart;
+      log.info(
+        { reviewId, durationMs: postDurationMs, commentsPosted: commentsPosted.length },
+        "Posting comments finished",
       );
     }
     await assertNotCancelled(cancelKey, "Review cancelled");
@@ -827,7 +960,11 @@ export async function executeReview(job: ReviewJob, sessionLogger?: Logger): Pro
     // ------------------------------------------------------------------
     const result: ReviewResult = {
       findings,
-      summary,
+      disprovenFindings: disprovenFindings.length > 0 ? disprovenFindings : undefined,
+      summary: {
+        ...summary,
+        disprovenCount: disprovenCount > 0 ? disprovenCount : undefined,
+      },
       commentsPosted,
       traces,
       prUrl: job.prUrl,
@@ -1223,6 +1360,7 @@ async function runAgents(
   job: ReviewJob,
   repoContext: { repoId: string; repoPath: string },
   cancelKey: string,
+  hasEmbeddings: boolean,
   extras?: { prFacts?: string; plannerNotes?: string },
 ): Promise<AgentResult> {
   await assertNotCancelled(cancelKey, "Review cancelled");
@@ -1266,16 +1404,19 @@ async function runAgents(
       batchTraces.push(buildSkippedTrace("logic"));
     }
 
-    // Duplication agent - needs vectors
-    if (!degradation.noVectors && !degradation.noEmbeddings && !options.skipDuplication) {
+    // Duplication agent - uses embeddings if available, falls back to grep
+    if (!options.skipDuplication && !degradation.slowLlm) {
       await assertNotCancelled(cancelKey, "Review cancelled");
-      agentTasks.push({ name: "duplication", promise: runSingleAgentWithTrace("duplication", reviewId, prompt, repoContext) });
+      // Use embedding-based agent if embeddings are available, otherwise grep-based
+      const duplicationAgentId = hasEmbeddings ? "duplication" : "duplication-grep";
+      if (batchIdx === 0) {
+        log.info({ reviewId, hasEmbeddings, agentId: duplicationAgentId }, "Running duplication agent");
+      }
+      agentTasks.push({ name: "duplication", promise: runSingleAgentWithTrace(duplicationAgentId, reviewId, prompt, repoContext) });
       runningAgents.push("duplication");
     } else if (batchIdx === 0) {
       if (options.skipDuplication) {
         log.info({ reviewId }, "Skipping duplication agent (disabled by user)");
-      } else {
-        log.info({ reviewId }, "Skipping duplication agent (vectors unavailable)");
       }
       batchTraces.push(buildSkippedTrace("duplication"));
     }
@@ -1299,6 +1440,15 @@ async function runAgents(
       runningAgents.push("refactor");
     } else if (batchIdx === 0) {
       batchTraces.push(buildSkippedTrace("refactor"));
+    }
+
+    // Completeness agent - finds MISSING controls (CSRF, rate limiting, validation)
+    if (!degradation.slowLlm) {
+      await assertNotCancelled(cancelKey, "Review cancelled");
+      agentTasks.push({ name: "completeness", promise: runSingleAgentWithTrace("completeness", reviewId, prompt, repoContext) });
+      runningAgents.push("completeness");
+    } else if (batchIdx === 0) {
+      batchTraces.push(buildSkippedTrace("completeness"));
     }
 
     if (runningAgents.length > 0) {
@@ -1395,8 +1545,11 @@ async function runSingleAgentWithTrace(
     "security": securityAgent,
     "logic": logicAgent,
     "duplication": duplicationAgent,
+    "duplication-grep": duplicationGrepAgent,
     "api-change": apiChangeAgent,
     "refactor": refactorAgent,
+    "completeness": completenessAgent,
+    "verification": verificationAgent,
   };
 
   const agent = agents[agentName];
@@ -1483,6 +1636,7 @@ const AGENT_DEFAULT_CATEGORY: Record<string, Category> = {
   duplication: "duplication",
   "api-change": "api-change",
   refactor: "refactor",
+  completeness: "security", // Missing controls are security-related
 };
 
 function parseFindingsFromResponse(text: string, agentName: string): Finding[] {
@@ -1576,6 +1730,191 @@ function extractJsonObject(text: string): string | null {
     }
   }
   return null;
+}
+
+// ---------------------------------------------------------------------------
+// Verification Phase
+// ---------------------------------------------------------------------------
+
+interface VerificationResult {
+  verifiedFindings: Finding[];
+  disprovenFindings: Finding[];
+  disprovenCount: number;
+}
+
+/**
+ * Run the verification phase to disprove false positives.
+ * Uses the verification agent to semantically analyze findings and determine
+ * if they're actually exploitable.
+ */
+async function runVerificationPhase(
+  reviewId: string,
+  findings: Finding[],
+  repoContext: { repoId: string; repoPath: string },
+  cancelKey: string,
+): Promise<VerificationResult> {
+  // Batch findings for efficiency (max 10 per batch)
+  const BATCH_SIZE = 10;
+  const batches: Finding[][] = [];
+
+  for (let i = 0; i < findings.length; i += BATCH_SIZE) {
+    batches.push(findings.slice(i, i + BATCH_SIZE));
+  }
+
+  const verifiedFindings: Finding[] = [];
+  const disprovenFindings: Finding[] = [];
+  let disprovenCount = 0;
+
+  for (const batch of batches) {
+    await assertNotCancelled(cancelKey, "Review cancelled");
+
+    const prompt = `
+You are verifying the following findings from a code review.
+For each finding, investigate whether it's actually exploitable or a false positive.
+
+## Findings to Verify
+
+${JSON.stringify(batch, null, 2)}
+
+## Instructions
+
+1. For each finding, use your tools to trace data flow and verify if:
+   - The data source is actually user-controlled (USER_INPUT)
+   - There's no sanitization/validation between source and sink
+   - The vulnerability is actually exploitable
+
+2. Return your verification results in JSON format.
+
+IMPORTANT: Be skeptical. Many security findings are false positives because:
+- The data comes from server-side context, not user input
+- There's sanitization/validation you need to find
+- The framework provides automatic protection
+
+Return format:
+\`\`\`json
+{
+  "verifiedFindings": [
+    { /* original finding with verificationNotes field added */ }
+  ],
+  "disprovenFindings": [
+    {
+      "originalFinding": { /* the original finding */ },
+      "disprovalReason": "Explanation of why this is a false positive"
+    }
+  ]
+}
+\`\`\`
+`;
+
+    try {
+      const result = await openRouterBreaker.execute(async () => {
+        return runWithRepoContext(repoContext, () => verificationAgent.generate(prompt));
+      });
+
+      const text = typeof result.text === "string" ? result.text : "";
+      const parsed = parseVerificationResponse(text, batch);
+
+      verifiedFindings.push(...parsed.verified);
+      disprovenFindings.push(...parsed.disproven);
+      disprovenCount += parsed.disprovenCount;
+    } catch (error) {
+      log.warn(
+        { reviewId, error: error instanceof Error ? error.message : String(error) },
+        "Verification batch failed, keeping original findings",
+      );
+      // If verification fails, keep original findings
+      verifiedFindings.push(...batch);
+    }
+  }
+
+  return { verifiedFindings, disprovenFindings, disprovenCount };
+}
+
+/**
+ * Parse verification response from the agent
+ */
+function parseVerificationResponse(
+  text: string,
+  originalFindings: Finding[],
+): { verified: Finding[]; disproven: Finding[]; disprovenCount: number } {
+  try {
+    const json = extractJsonObject(text);
+    if (!json) {
+      // If we can't parse, keep all original findings
+      return { verified: originalFindings, disproven: [], disprovenCount: 0 };
+    }
+
+    const parsed = JSON.parse(json) as {
+      verifiedFindings?: unknown[];
+      disprovenFindings?: unknown[];
+    };
+
+    // Extract verified findings
+    const verified: Finding[] = [];
+    if (Array.isArray(parsed.verifiedFindings)) {
+      for (const item of parsed.verifiedFindings) {
+        const f = item as Record<string, unknown>;
+        // Reconstruct finding with verification notes
+        const finding: Finding = {
+          file: String(f.file ?? ""),
+          line: Number(f.line ?? 0),
+          severity: (f.severity as Severity) ?? "info",
+          category: (f.category as Category) ?? "bug",
+          title: String(f.title ?? ""),
+          description: String(f.description ?? ""),
+          suggestion: f.suggestion ? String(f.suggestion) : undefined,
+          confidence: Number(f.confidence ?? 0.5),
+          lineText: f.lineText ? String(f.lineText) : undefined,
+          lineId: f.lineId ? String(f.lineId) : undefined,
+          cwe: f.cwe ? String(f.cwe) : undefined,
+        };
+
+        // Add verification notes if present
+        if (f.verificationNotes) {
+          finding.verificationNotes = String(f.verificationNotes);
+        }
+
+        verified.push(finding);
+      }
+    }
+
+    // Extract disproven findings with reason
+    const disproven: Finding[] = [];
+    if (Array.isArray(parsed.disprovenFindings)) {
+      for (const item of parsed.disprovenFindings) {
+        const f = item as Record<string, unknown>;
+        const finding: Finding = {
+          file: String(f.file ?? ""),
+          line: Number(f.line ?? 0),
+          severity: (f.severity as Severity) ?? "info",
+          category: (f.category as Category) ?? "bug",
+          title: String(f.title ?? ""),
+          description: String(f.description ?? ""),
+          suggestion: f.suggestion ? String(f.suggestion) : undefined,
+          confidence: Number(f.confidence ?? 0.5),
+          lineText: f.lineText ? String(f.lineText) : undefined,
+          lineId: f.lineId ? String(f.lineId) : undefined,
+          cwe: f.cwe ? String(f.cwe) : undefined,
+          // Mark as disproven with reason
+          disproven: true,
+          disprovenReason: f.reason ? String(f.reason) : "Marked as false positive by verification",
+        };
+        disproven.push(finding);
+      }
+    }
+
+    const disprovenCount = disproven.length;
+
+    // If nothing verified, return original findings (safety)
+    if (verified.length === 0 && disprovenCount === 0) {
+      return { verified: originalFindings, disproven: [], disprovenCount: 0 };
+    }
+
+    return { verified, disproven, disprovenCount };
+  } catch (error) {
+    log.warn({ error }, "Failed to parse verification response");
+    return { verified: originalFindings, disproven: [], disprovenCount: 0 };
+  }
 }
 
 /**
@@ -1816,18 +2155,40 @@ async function postFindings(
       return;
     }
     const resolvedLine = resolveCommentLine(file, line, diffMap);
-    if (!resolvedLine) return;
+    if (!resolvedLine) {
+      log.debug({ reviewId, file, line, hasDiffFile: diffMap.has(file) }, "Comment skipped: line not in diff");
+      return;
+    }
+    log.debug({ reviewId, file, line: resolvedLine }, "Posting inline comment to Bitbucket");
     const result = await bitbucketBreaker.execute(() =>
       bitbucketClient.postInlineComment(workspace, repoSlug, prNumber, token, file, resolvedLine, content),
     );
+    log.info({ reviewId, file, line: resolvedLine, commentId: result.id }, "Inline comment posted successfully");
     posted.push({ commentId: result.id, file, line: resolvedLine });
     alreadyPosted.add(commentKey);
   }
 
+  log.info(
+    {
+      reviewId,
+      inlineFindingsCount: inlineFindings.length,
+      synthesisCommentsCount: synthesis?.inlineComments?.length ?? 0,
+      allowlistSize: inlineAllowlist.size,
+      diffFilesCount: diffMap.size,
+    },
+    "Starting inline comment posting",
+  );
+
   if (synthesis?.inlineComments && synthesis.inlineComments.length > 0) {
+    log.debug({ reviewId }, "Using synthesis inline comments");
+    let skippedNotInAllowlist = 0;
     for (const comment of synthesis.inlineComments) {
       const allowKey = `${comment.file}:${comment.line}`;
-      if (!inlineAllowlist.has(allowKey)) continue;
+      if (!inlineAllowlist.has(allowKey)) {
+        skippedNotInAllowlist++;
+        log.debug({ reviewId, file: comment.file, line: comment.line }, "Synthesis comment skipped: not in allowlist");
+        continue;
+      }
       try {
         if (cancelKey) await assertNotCancelled(cancelKey, "Review cancelled");
         await tryPostInlineComment(comment.file, comment.line, comment.content);
@@ -1839,7 +2200,11 @@ async function postFindings(
         );
       }
     }
+    if (skippedNotInAllowlist > 0) {
+      log.info({ reviewId, skippedNotInAllowlist }, "Some synthesis comments skipped (not in allowlist)");
+    }
   } else {
+    log.debug({ reviewId, inlineFindingsCount: inlineFindings.length }, "Using raw findings for inline comments");
     for (const finding of inlineFindings) {
       try {
         if (cancelKey) await assertNotCancelled(cancelKey, "Review cancelled");
@@ -1868,18 +2233,21 @@ async function postFindings(
     if (cancelKey) {
       await assertNotCancelled(cancelKey, "Review cancelled");
     }
+    log.debug({ reviewId }, "Posting summary comment to Bitbucket");
     const summaryBody = synthesis?.summaryComment ?? formatSummaryComment(summary, findings.length, traces, findings, synthesis?.recommendation);
     await bitbucketBreaker.execute(() =>
       bitbucketClient.postSummaryComment(workspace, repoSlug, prNumber, token, summaryBody),
     );
+    log.info({ reviewId }, "Summary comment posted successfully");
   } catch (error) {
     if (isCancellationError(error)) throw error;
     log.warn(
-      { error: error instanceof Error ? error.message : String(error) },
+      { reviewId, error: error instanceof Error ? error.message : String(error) },
       "Failed to post summary comment",
     );
   }
 
+  log.info({ reviewId, postedCount: posted.length }, "Finished posting comments to Bitbucket");
   return posted;
 }
 
@@ -1892,8 +2260,18 @@ function formatFindingComment(finding: Finding): string {
     critical: "\u{1F534}", high: "\u{1F7E0}", medium: "\u{1F7E1}", low: "\u{1F535}", info: "\u26AA",
   };
 
+  const categoryEmoji: Record<Category, string> = {
+    security: "\u{1F512}",    // 🔒
+    bug: "\u{1F41B}",         // 🐛
+    duplication: "\u{1F4CB}", // 📋
+    "api-change": "\u{26A0}\u{FE0F}",  // ⚠️
+    refactor: "\u{1F9F9}",    // 🧹
+  };
+
+  const catEmoji = categoryEmoji[finding.category] ?? "";
+
   const lines = [
-    `${severityEmoji[finding.severity]} **${finding.severity.toUpperCase()}** | ${finding.category}`,
+    `${severityEmoji[finding.severity]} **${finding.severity.toUpperCase()}** | ${catEmoji} ${finding.category}`,
     "",
     `**${finding.title}**`,
     "",
@@ -1984,22 +2362,31 @@ function formatSummaryComment(
         lines.push("");
       }
 
-      // Medium — capped at 5
+      // Medium — show all with file:line
       if (bySev.medium!.length > 0) {
         lines.push("### \uD83D\uDFE1 Medium");
-        for (const f of bySev.medium!.slice(0, 5)) {
+        for (const f of bySev.medium!) {
           lines.push(`- ${f.title} (\`${f.file.split("/").pop()}:${f.line}\`)`);
-        }
-        if (bySev.medium!.length > 5) {
-          lines.push(`- _...and ${bySev.medium!.length - 5} more_`);
         }
         lines.push("");
       }
 
-      // Low — one-liner summary
+      // Low — show all with file:line (so users can find them)
       if (bySev.low!.length > 0) {
-        const categories = [...new Set(bySev.low!.map((f) => f.title.toLowerCase().split(" ")[0]))].slice(0, 4);
-        lines.push(`\uD83D\uDD35 **${bySev.low!.length} low-priority issue${bySev.low!.length !== 1 ? "s"  : ""}** (${categories.join(", ")}...)`, "");
+        lines.push("### \uD83D\uDD35 Low");
+        for (const f of bySev.low!) {
+          lines.push(`- ${f.title} (\`${f.file.split("/").pop()}:${f.line}\`)`);
+        }
+        lines.push("");
+      }
+
+      // Info — show all with file:line
+      if (bySev.info!.length > 0) {
+        lines.push("### \u26AA Info");
+        for (const f of bySev.info!) {
+          lines.push(`- ${f.title} (\`${f.file.split("/").pop()}:${f.line}\`)`);
+        }
+        lines.push("");
       }
     }
   }

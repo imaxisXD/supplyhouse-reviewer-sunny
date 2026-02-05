@@ -8,6 +8,8 @@ import { apiChangeAgent } from "../agents/api-change.ts";
 import { refactorAgent } from "../agents/refactor.ts";
 import { plannerAgent } from "../agents/planner.ts";
 import { synthesisAgent } from "../agents/synthesis.ts";
+import { completenessAgent } from "../agents/completeness.ts";
+import { verificationAgent } from "../agents/verification.ts";
 import { domainFactsWorkflow } from "../workflows/domain-facts.ts";
 
 /**
@@ -57,6 +59,8 @@ export const mastra = new Mastra({
     "refactor-agent": refactorAgent,
     "planner-agent": plannerAgent,
     "synthesis-agent": synthesisAgent,
+    "completeness-agent": completenessAgent,
+    "verification-agent": verificationAgent,
   },
   workflows: {
     "get_domain_facts": domainFactsWorkflow,
@@ -77,4 +81,6 @@ export {
   refactorAgent,
   plannerAgent,
   synthesisAgent,
+  completenessAgent,
+  verificationAgent,
 };
