@@ -31,7 +31,8 @@
       "Bash(git fetch:*)",
       "Bash(git checkout:*)",
       "Bash(grep:*)",
-      "Bash(find . -name \"*.ts\" -type f -exec grep -l \"low.*priority\\\\|brief.*comma\\\\|magic.*numbers\" {} ;)"
+      "Bash(find . -name \"*.ts\" -type f -exec grep -l \"low.*priority\\\\|brief.*comma\\\\|magic.*numbers\" {} ;)",
+      "Bash(xxd:*)"
     ]
   }
 }
