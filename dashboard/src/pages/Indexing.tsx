@@ -70,7 +70,7 @@ export default function Indexing() {
 
   const handleReindex = (pastJob: Record<string, unknown>) => {
     setRepoUrl((pastJob.repoUrl as string) ?? "");
-    setBranch((pastJob.branch as string) ?? "main");
+    setBranch((pastJob.branch as string) ?? "master");
     const pastFramework = (pastJob.framework as string) ?? "";
     if (pastFramework) {
       setFrameworkMode("manual");
@@ -273,7 +273,7 @@ export default function Indexing() {
                   type="text"
                   value={branch}
                   onChange={(e) => setBranch(e.target.value)}
-                  placeholder="main"
+                  placeholder="master"
                   className={`${inputClass} mt-2`}
                 />
               </div>

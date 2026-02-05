@@ -968,6 +968,7 @@ export async function executeReview(job: ReviewJob, sessionLogger?: Logger): Pro
       commentsPosted,
       traces,
       prUrl: job.prUrl,
+      options: job.options,
       synthesis: {
         inlineComments: synthesis.inlineComments,
         summaryComment: synthesis.summaryComment,
@@ -1379,7 +1380,25 @@ async function runAgents(
 
     const contextText = batch.map((pkg) => formatContextText(pkg, extras)).join("\n---\n\n");
     const batchLabel = batches.length > 1 ? ` (batch ${batchIdx + 1}/${batches.length})` : "";
-    const prompt = `Review the following code changes and provide your findings.${batchLabel}\n\nIMPORTANT — Line number instructions:\n- Each line in the diff is prefixed with its NEW file line number (e.g., "L 100: +added line").\n- Lines starting with "    :" are deleted lines and have no line number in the new file.\n- Report the "line" field using the line number shown in the prefix (e.g., if you see "L 100: +code", report line: 100).\n- Include "lineId" as the exact prefix value (e.g., "L100") and "lineText" as the code text after the diff marker (+/space).\n- Only report lines that appear in the diff hunks.\n\n${contextText}`;
+    const prompt = `Review the following code changes and provide your findings.${batchLabel}
+
+**CRITICAL — Line number extraction (MUST FOLLOW):**
+Each diff line is prefixed with its line number like this:
+  L  45: +const foo = bar;   ← Line 45, added line
+  L  46:  existing code      ← Line 46, context line
+      : -deleted line        ← Deleted line (no line number)
+
+**For EVERY finding you MUST:**
+1. Find the exact line in the diff that has the issue
+2. Extract the number after "L" (e.g., "L  45:" means line 45)
+3. Include "line": 45 in your finding JSON (NOT "line": 0, NOT omitting it)
+
+**Findings WITHOUT valid line numbers will be DISCARDED and not posted to the PR.**
+
+Example: If you see "L 123: +db.query(\`SELECT * FROM \${userId}\`)" and find SQL injection:
+→ Report: { "file": "...", "line": 123, "lineId": "L123", "lineText": "+db.query(...)", ... }
+
+${contextText}`;
 
     type AgentTask = { name: string; promise: Promise<{ findings: Finding[]; trace: AgentTrace }> };
     const agentTasks: AgentTask[] = [];
@@ -1646,10 +1665,39 @@ function parseFindingsFromResponse(text: string, agentName: string): Finding[] {
     const parsed = JSON.parse(json) as { findings?: unknown[] };
     if (!Array.isArray(parsed.findings)) return [];
 
-    return parsed.findings.map((item: unknown) => {
+    const findings: Finding[] = [];
+
+    for (const item of parsed.findings) {
       const f = item as Record<string, unknown>;
       const related = f.relatedCode as Record<string, unknown> | undefined;
       const affected = Array.isArray(f.affectedFiles) ? f.affectedFiles as Record<string, unknown>[] : [];
+
+      // Parse line number - try to get a valid line, but allow 0 if lineText is present
+      // (will be resolved later from lineText by applyLineResolution)
+      const rawLine = f.line;
+      let line = typeof rawLine === "number" ? rawLine : parseInt(String(rawLine), 10);
+
+      // Normalize invalid line numbers to 0 (will be resolved from lineText later)
+      if (!Number.isFinite(line) || line < 0) {
+        line = 0;
+      }
+
+      // Skip findings without both valid line number AND lineText - they can't be resolved
+      const hasLineText = typeof f.lineText === "string" && f.lineText.trim().length > 0;
+      if (line <= 0 && !hasLineText) {
+        log.warn(
+          { agent: agentName, file: f.file, title: f.title, rawLine },
+          "Skipping finding with no line number and no lineText - cannot resolve location"
+        );
+        continue;
+      }
+
+      if (line <= 0 && hasLineText) {
+        log.debug(
+          { agent: agentName, file: f.file, title: f.title, lineText: f.lineText },
+          "Finding has no line number but has lineText - will attempt resolution"
+        );
+      }
 
       // Validate severity against known values
       const rawSeverity = typeof f.severity === "string" ? f.severity.toLowerCase() : "";
@@ -1663,9 +1711,9 @@ function parseFindingsFromResponse(text: string, agentName: string): Finding[] {
         ? (rawCategory as Category)
         : (AGENT_DEFAULT_CATEGORY[agentName] ?? "bug");
 
-      return {
+      findings.push({
         file: String(f.file ?? ""),
-        line: Number(f.line ?? 0),
+        line,
         severity,
         category,
         title: String(f.title ?? ""),
@@ -1692,8 +1740,10 @@ function parseFindingsFromResponse(text: string, agentName: string): Finding[] {
                 usage: String(a.usage ?? ""),
               }))
           : undefined,
-      };
-    }) as Finding[];
+      });
+    }
+
+    return findings;
   } catch (error) {
     log.warn({ agent: agentName, error }, "Failed to parse agent findings");
     return [];
