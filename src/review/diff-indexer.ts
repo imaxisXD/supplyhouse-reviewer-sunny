@@ -1,4 +1,5 @@
 import type { DiffFile, DiffHunk } from "../types/bitbucket.ts";
+import type { Finding } from "../types/findings.ts";
 import { createHash } from "crypto";
 
 export type DiffLineKind = "add" | "delete" | "context";

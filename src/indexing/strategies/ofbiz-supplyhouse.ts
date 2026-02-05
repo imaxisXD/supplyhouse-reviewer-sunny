@@ -476,7 +476,7 @@ export function parseOfbizFiles(repoPath: string, fileSet: OfbizFileSet): OfbizD
       if (rawPage) {
         if (rawPage.includes("#")) {
           const [rawPath, screen] = rawPage.split("#");
-          resolvedPage = resolveComponentPath(repoPath, rawPath);
+          resolvedPage = resolveComponentPath(repoPath, rawPath ?? "");
           screenName = screen;
         } else if (rawPage.endsWith(".ftl") || rawPage.endsWith(".xml")) {
           resolvedPage = resolveComponentPath(repoPath, rawPage);

@@ -368,7 +368,7 @@ async function indexRepoIfNeeded(
   const excludePatterns = new Set<string>([
     ...detections.flatMap((d) => d.excludePatterns),
   ]);
-  const frameworkNames = detections.map((d) => d.name);
+  const frameworkNames = detections.map((d) => d.framework);
   await emitActivity(reviewId, frameworkNames.length > 0
     ? `Frameworks detected: ${frameworkNames.join(", ")}`
     : "No specific frameworks detected");

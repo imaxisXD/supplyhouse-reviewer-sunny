@@ -194,8 +194,8 @@ const domainFactsStep = createStep({
   description: "Fetches OFBiz domain facts from the code graph for a file or entity/service name.",
   inputSchema: DomainFactsInput,
   outputSchema: DomainFactsOutput,
-  execute: async (input) => {
-    const repoId = input.repoId ?? getRepoContext()?.repoId;
+  execute: async ({ inputData }) => {
+    const repoId = inputData?.repoId ?? getRepoContext()?.repoId;
     if (!repoId) {
       return { summary: "repoId not available for domain facts lookup." };
     }
@@ -206,16 +206,16 @@ const domainFactsStep = createStep({
     }
 
     let facts: FileDomainFacts | undefined;
-    if (input.filePath) {
-      facts = await getFileDomainFacts(repoId, input.filePath, profile);
-    } else if (input.entityName) {
-      facts = await fetchEntityFacts(repoId, input.entityName);
-    } else if (input.serviceName) {
-      facts = await fetchServiceFacts(repoId, input.serviceName);
-    } else if (input.templatePath) {
-      facts = await fetchTemplateFacts(repoId, input.templatePath);
-    } else if (input.scriptPath) {
-      facts = await fetchScriptFacts(repoId, input.scriptPath);
+    if (inputData?.filePath) {
+      facts = await getFileDomainFacts(repoId, inputData.filePath, profile);
+    } else if (inputData?.entityName) {
+      facts = await fetchEntityFacts(repoId, inputData.entityName);
+    } else if (inputData?.serviceName) {
+      facts = await fetchServiceFacts(repoId, inputData.serviceName);
+    } else if (inputData?.templatePath) {
+      facts = await fetchTemplateFacts(repoId, inputData.templatePath);
+    } else if (inputData?.scriptPath) {
+      facts = await fetchScriptFacts(repoId, inputData.scriptPath);
     }
 
     return {
