@@ -31,6 +31,7 @@ interface IndexJob {
 
 export default function Indexing() {
   const [repoUrl, setRepoUrl] = useState("");
+  const [email, setEmail] = useState("");
   const [token, setToken] = useState("");
   const [branch, setBranch] = useState("main");
   const [framework, setFramework] = useState("");
@@ -83,6 +84,13 @@ export default function Indexing() {
     window.scrollTo({ top: 0, behavior: "smooth" });
   };
 
+  const buildFullToken = () => {
+    const trimmedEmail = email.trim();
+    const trimmedToken = token.trim();
+    if (trimmedEmail) return `${trimmedEmail}:${trimmedToken}`;
+    return trimmedToken;
+  };
+
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     setError("");
@@ -92,14 +100,15 @@ export default function Indexing() {
     try {
       const frameworkOverride = frameworkMode === "manual" ? framework || undefined : undefined;
       const files = changedFiles.split("\n").map((f) => f.trim()).filter(Boolean);
+      const fullToken = buildFullToken();
 
       if (incremental && files.length === 0) {
         throw new Error("Provide at least one changed file for incremental indexing.");
       }
 
       const { indexId } = await (incremental
-        ? submitIncrementalIndex({ repoUrl, token, branch: branch || undefined, framework: frameworkOverride, changedFiles: files })
-        : submitIndex({ repoUrl, token, branch: branch || undefined, framework: frameworkOverride }));
+        ? submitIncrementalIndex({ repoUrl, token: fullToken, branch: branch || undefined, framework: frameworkOverride, changedFiles: files })
+        : submitIndex({ repoUrl, token: fullToken, branch: branch || undefined, framework: frameworkOverride }));
 
       setJob({
         id: indexId,
@@ -186,16 +195,74 @@ export default function Indexing() {
             </div>
 
             <div>
-              <label htmlFor="access-token" className={labelClass}>Access Token</label>
+              <label htmlFor="bb-email" className={labelClass}>Email</label>
+              <input
+                id="bb-email"
+                type="text"
+                value={email}
+                onChange={(e) => setEmail(e.target.value)}
+                placeholder="Enter your Bitbucket e-mail"
+                className={`${inputClass} mt-2`}
+                autoComplete="email"
+              />
+              <a
+                href="https://bitbucket.org/account/settings/"
+                target="_blank"
+                rel="noopener noreferrer"
+                className="mt-1 inline-flex items-center gap-1 text-[10px] text-brand-600 hover:underline"
+              >
+                Find your email
+                <svg viewBox="0 0 12 12" fill="none" className="h-3 w-3">
+                  <path d="M3.5 2H10V8.5M10 2L2 10" stroke="currentColor" strokeWidth="1.2" strokeLinecap="round" strokeLinejoin="round" />
+                </svg>
+              </a>
+            </div>
+
+            <div>
+              <label htmlFor="access-token" className={labelClass}>Token</label>
               <input
                 id="access-token"
                 type="password"
                 value={token}
                 onChange={(e) => setToken(e.target.value)}
-                placeholder="Bitbucket access token…"
+                placeholder="Enter token"
                 className={`${inputClass} mt-2`}
                 autoComplete="current-password"
               />
+              <details className="mt-2 text-[10px] text-ink-600">
+                <summary className="cursor-pointer hover:text-ink-900 transition">
+                  How to connect using a Personal Access Token
+                </summary>
+                <div className="mt-2 border border-dashed border-ink-900 bg-warm-50 p-3 space-y-2 text-ink-700">
+                  <p>
+                    1. Create a{" "}
+                    <a
+                      href="https://bitbucket.org/account/settings/app-passwords/"
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      className="text-brand-600 hover:underline"
+                    >
+                      Personal Access Token
+                    </a>{" "}
+                    on Bitbucket
+                  </p>
+                  <p>2. Ensure the required scopes are checked:</p>
+                  <div className="flex flex-wrap gap-1.5">
+                    {[
+                      "read:repository:bitbucket",
+                      "read:pullrequest:bitbucket",
+                      "write:pullrequest:bitbucket",
+                    ].map((scope) => (
+                      <span
+                        key={scope}
+                        className="inline-block border border-ink-900 bg-white px-2 py-0.5 font-mono text-[10px] text-ink-700"
+                      >
+                        {scope}
+                      </span>
+                    ))}
+                  </div>
+                </div>
+              </details>
             </div>
 
             <div className="grid grid-cols-1 gap-4 md:grid-cols-2">

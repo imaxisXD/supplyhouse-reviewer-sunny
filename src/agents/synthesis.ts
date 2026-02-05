@@ -66,48 +66,46 @@ Severity emojis:
 
 ### 5. Summary Comment
 
-Generate a **rich, narrative summary comment** for the PR. You will receive the PR title, description, and a list of changed files with their additions/deletions. Use this context to write an informative summary.
+Generate a **concise summary comment** for the PR. Keep it short and scannable — use emojis to group findings by severity. Do NOT include "Key Changes", "Important Files Changed" tables, or verbose paragraphs.
 
 **Summary Format:**
 \`\`\`markdown
-## Summary
-[1-3 sentence narrative description of what this PR does, based on the PR title, description, and the files changed. Be specific about the feature or fix being implemented.]
+## \uD83D\uDD0D Review Summary
 
-**Key Changes:**
-- [Bullet point describing a key change, referencing specific files]
-- [Another key change]
-- [...]
+[1 sentence describing what this PR does]
 
-**Issues Found:**
-- [Issue description with specific file:line reference] (lines X of filename.ext)
-- [Another issue]
-- [...]
-[If no issues: "No issues found. The code looks clean and well-structured."]
+\uD83D\uDCCA Analyzed **N** files \u00B7 Found **N** issues \u00B7 \u23F1 Xs
 
-**Confidence Score: [X]/5**
-[One of: "Safe to merge", "Safe to merge after fixing the issues above", "Request changes - [critical issues need attention]", "Review suggested - [explain what needs human review]"]
+\uD83D\uDD34 **N Critical** \u00B7 \uD83D\uDFE0 **N High** \u00B7 \uD83D\uDFE1 **N Medium** \u00B7 \uD83D\uDD35 **N Low**
 
-[1-2 sentence detailed assessment of the overall code quality, what's done well, and what needs attention.]
+[Only include severity sections that have findings:]
 
-[If there are critical files that need extra attention:]
-**Pay close attention to** \`path/to/critical-file.ext\` - [reason why this file needs attention]
+### \uD83D\uDD34 Critical
+- Issue title (\`file:line\`)
 
-### Important Files Changed
+### \uD83D\uDFE0 High Priority
+- Issue title (\`file:line\`)
 
-| Filename | Overview |
-|----------|----------|
-| \`path/to/file1.ts\` | [Brief 1-sentence description of what changed in this file] |
-| \`path/to/file2.ts\` | [Brief 1-sentence description] |
-[Include all files from the changed files list]
+### \uD83D\uDFE1 Medium
+- Issue title (\`file:line\`)
+[Show at most 5 medium findings. If more, add "...and N more"]
+
+\uD83D\uDD35 **N low-priority issues** (brief comma-separated list of categories, e.g. "magic numbers, unused vars, code duplication")
+
+[If no issues: "\u2705 No issues found. Code looks clean."]
+
+**Code Quality: [X]/5** \u00B7 [Recommendation sentence]
+
+---
+_Automated review by SupplyHouse Reviewer_
 \`\`\`
 
-**Confidence Score Logic (1-5 scale):**
-- Compute the average confidence across all findings
-- avg >= 0.85 or no findings -> 5/5
-- avg >= 0.70 -> 4/5
-- avg >= 0.55 -> 3/5
-- avg >= 0.40 -> 2/5
-- avg < 0.40 -> 1/5
+**Code Quality Score Logic (1-5 scale) — measures code quality, NOT review confidence:**
+- No findings or only info-level -> 5/5
+- Only low-severity findings -> 4/5
+- Medium findings present, no high/critical -> 3/5
+- Any high-severity findings present -> 2/5
+- Any critical findings OR 3+ high findings -> 1/5
 
 **Recommendation Logic:**
 - Any critical finding -> "Request changes"
@@ -150,21 +148,25 @@ Return a JSON object with the following structure:
     "byCategory": { "security": 1, "bug": 2, "api-change": 1, "duplication": 1, "refactor": 2 }
   },
   "recommendation": "Review Suggested",
-  "confidenceScore": 3
+  "codeQualityScore": 3
 }
 \`\`\`
 
 ## Important Notes
 
 - Never invent findings. Only work with what the specialist agents provided.
+- Drop speculative or acknowledgement-only findings.
+- Require evidence for api-change and duplication findings (affectedFiles or relatedCode).
+- Avoid producing inline comments without a concrete risk.
 - If an agent returned no findings, that is fine -- it means that area is clean.
 - Maintain the original file paths and line numbers exactly as provided.
+- Preserve "lineId" and "lineText" fields if they were provided by specialist agents.
 - When merging findings, clearly attribute the original sources in the description.
 - Keep the total number of findings manageable -- aim for quality over quantity.
 - If there are more than 20 findings, prioritise and only include the top 20 most important ones, noting the rest in the summary.
-- The summary should feel like it was written by a knowledgeable tech lead, not a template engine. Write naturally and specifically about the actual code changes.
-- Always include the "Important Files Changed" table -- it helps reviewers navigate the PR quickly.
-- The "Key Changes" section should describe WHAT was changed (features, functionality), not repeat the issues.`,
+- The summary should be concise and scannable. Keep it under 25 lines. Do NOT add "Key Changes", "Important Files Changed" tables, or verbose assessment paragraphs.
+- Use emojis consistently for severity grouping. Only show severity sections that have findings.
+- For medium findings, show at most 5 items then "...and N more". For low findings, show just a count with brief category list.`,
   model: MODELS.synthesis,
   tools: {},
 });

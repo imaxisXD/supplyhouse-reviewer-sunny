@@ -58,6 +58,7 @@ export function parseDiff(rawDiff: string): DiffFile[] {
       diff: diffLines.join("\n"),
       additions,
       deletions,
+      hunks: currentHunks.length > 0 ? [...currentHunks] : undefined,
     };
 
     if (status === "renamed" && oldPath !== newPath) {
@@ -187,6 +188,10 @@ export function mapDiffLineToFileLine(
   let diffPosition = 0;
 
   for (const rawLine of rawLines) {
+    if (rawLine.startsWith("\\ No newline at end of file")) {
+      diffPosition++;
+      continue;
+    }
     // Hunk header - reset position counters
     const hunkMatch = rawLine.match(HUNK_HEADER_REGEX);
     if (hunkMatch) {

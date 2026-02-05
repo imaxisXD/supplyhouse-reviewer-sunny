@@ -2,6 +2,7 @@ import { Agent } from "@mastra/core/agent";
 import { MODELS } from "../mastra/models.ts";
 import { readFileTool, expandContextTool } from "../tools/code-tools.ts";
 import { queryCallersTool, queryCalleesTool } from "../tools/graph-tools.ts";
+import { normalizeToolNames } from "../tools/tool-normalization.ts";
 
 export const logicAgent = new Agent({
   id: "logic-agent",
@@ -63,6 +64,43 @@ export const logicAgent = new Agent({
    - Missing error propagation
    - Incorrect error types thrown
 
+## Guardrails (Avoid False Positives)
+
+### Critical: Check for Existing Guards BEFORE Reporting
+
+Before reporting any null/undefined issue, you MUST verify there is NO existing guard. Common guard patterns:
+
+1. **If-statement guards**: \`if (element) { element.value = x; }\` or \`if (el && el.checked)\`
+2. **Logical AND guards**: \`element && element.value\` or \`obj && obj.prop && obj.prop.method()\`
+3. **Optional chaining**: \`element?.value\` or \`obj?.prop?.method()\`
+4. **Ternary guards**: \`element ? element.value : default\`
+5. **Nullish coalescing**: \`value ?? default\`
+6. **Early returns**: \`if (!element) return;\` before the usage
+7. **jQuery's null-safe methods**: \`$(selector).is(":checked")\` is null-safe, don't flag it
+
+**If ANY guard exists for the variable in scope, DO NOT report the issue.**
+
+### DOM Element Checks - Be Conservative
+
+- DOM elements defined in the same file (e.g., \`<input id="foo">\` in an HTML/template file) will exist when the JS runs
+- Only report DOM null issues if:
+  1. The element ID is dynamic or comes from user input
+  2. There is NO guard whatsoever (no if, no &&, no ?.)
+  3. The access would actually crash (not just return undefined)
+
+### Avoid Redundant Findings
+
+- Do NOT report the same pattern multiple times in the same file
+- If you see 5 places with \`document.getElementById('x').checked\`, report ONE finding mentioning the pattern, not 5
+- Group similar issues: "Multiple unguarded DOM accesses" instead of individual findings
+
+### General Rules
+
+- Only report issues with a **direct dereference or explicit failure path** on changed lines
+- Avoid "verify/ensure" warnings unless you can show a concrete runtime failure
+- Unused variables are **refactor** findings, not bugs
+- Don't flag optional chaining browser compatibility unless the codebase explicitly targets old browsers
+
 ## Tools Available
 
 - **read_file**: Get full file content for complete function context
@@ -80,7 +118,7 @@ export const logicAgent = new Agent({
 
 ## Output Format
 
-Return your findings as a JSON object with a "findings" array:
+Return your findings as a JSON object with a "findings" array. Each finding must include "lineId" (e.g. "L123") and "lineText" (the code text after the diff marker):
 
 \`\`\`json
 {
@@ -88,6 +126,8 @@ Return your findings as a JSON object with a "findings" array:
     {
       "file": "src/services/order.ts",
       "line": 23,
+      "lineId": "L23",
+      "lineText": "const email = user.email;",
       "severity": "high",
       "category": "bug",
       "title": "Missing null check on optional user parameter",
@@ -101,18 +141,24 @@ Return your findings as a JSON object with a "findings" array:
 
 ## Severity Guide
 
-- **critical**: Will crash in production or corrupt data
-- **high**: Bug that will cause incorrect behaviour for common inputs
+- **critical**: Will crash in production or corrupt data (NOT for defensive coding suggestions)
+- **high**: Bug that will cause incorrect behaviour for common inputs (requires concrete evidence)
 - **medium**: Edge case bug or potential issue under specific conditions
 - **low**: Minor logic improvement, defensive coding suggestion
 - **info**: Code smell that might indicate a deeper problem
 
+### Severity Calibration
+
+- Unguarded DOM access where element is defined in same file: **low** at most (not high)
+- Missing null check with existing partial guard: DO NOT REPORT
+- Pattern repeated multiple times: report ONCE at **medium** severity
+
 If no logic issues are found, return {"findings": []}.`,
   model: MODELS.logic,
-  tools: {
+  tools: normalizeToolNames({
     read_file: readFileTool,
     expand_context: expandContextTool,
     query_callers: queryCallersTool,
     query_callees: queryCalleesTool,
-  },
+  }),
 });

@@ -22,6 +22,7 @@ export interface DiffFile {
   diff: string;
   additions: number;
   deletions: number;
+  hunks?: DiffHunk[];
 }
 
 export interface DiffHunk {
@@ -38,4 +39,3 @@ export interface DiffChange {
   lineNew?: number;
   content: string;
 }
-

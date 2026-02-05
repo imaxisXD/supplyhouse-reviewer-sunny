@@ -1,21 +1,36 @@
 import pino from "pino";
 import type { Logger } from "pino";
+import * as fs from "fs";
+import * as path from "path";
 import { env } from "./env.ts";
+
+// Ensure logs directory exists
+const LOG_DIR = path.resolve(import.meta.dir, "../../logs");
+fs.mkdirSync(LOG_DIR, { recursive: true });
+const LOG_FILE = path.join(LOG_DIR, "app.log");
+
+const useTransport = env.NODE_ENV === "development";
 
 const baseLogger: Logger = pino({
   level: env.LOG_LEVEL,
-  transport:
-    env.NODE_ENV === "development"
-      ? {
-          target: "pino/file",
-          options: { destination: 1 },
-        }
-      : undefined,
-  formatters: {
-    level(label) {
-      return { level: label };
-    },
-  },
+  transport: useTransport
+    ? {
+        targets: [
+          // stdout — so you still see logs in terminal
+          { target: "pino/file", options: { destination: 1 }, level: env.LOG_LEVEL },
+          // persistent log file
+          { target: "pino/file", options: { destination: LOG_FILE }, level: env.LOG_LEVEL },
+        ],
+      }
+    : undefined,
+  // Pino does not allow custom level formatters with transport targets.
+  formatters: useTransport
+    ? undefined
+    : {
+        level(label) {
+          return { level: label };
+        },
+      },
   timestamp: pino.stdTimeFunctions.isoTime,
   base: {
     service: "supplyhouse-reviewer",

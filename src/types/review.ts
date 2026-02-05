@@ -3,10 +3,12 @@ import type { Finding } from "./findings";
 export type ReviewPhase =
   | "queued"
   | "fetching-pr"
+  | "indexing"
   | "building-context"
   | "running-agents"
   | "synthesizing"
   | "posting-comments"
+  | "cancelling"
   | "complete"
   | "failed";
 
@@ -37,6 +39,7 @@ export interface ReviewStatus {
   currentFile?: string;
   agentsRunning?: string[];
   error?: string;
+  prUrl?: string;
   startedAt: string;
   completedAt?: string;
 }

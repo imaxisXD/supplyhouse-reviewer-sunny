@@ -39,6 +39,19 @@ diff --git a/file2.ts b/file2.ts
     expect(files[0]!.path).toBe("file1.ts");
     expect(files[1]!.path).toBe("file2.ts");
   });
+
+  it("captures hunks on DiffFile", () => {
+    const diff = `diff --git a/sample.ts b/sample.ts
+--- a/sample.ts
++++ b/sample.ts
+@@ -1,2 +1,3 @@
+ const a = 1;
++const b = 2;
+ const c = 3;`;
+    const files = parseDiff(diff);
+    expect(files[0]!.hunks?.length).toBe(1);
+    expect(files[0]!.hunks?.[0]!.newStart).toBe(1);
+  });
 });
 
 // ---------------------------------------------------------------------------

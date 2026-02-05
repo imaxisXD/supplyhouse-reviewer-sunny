@@ -6,6 +6,7 @@ import ReviewStatus from "./pages/ReviewStatus";
 import ReviewResults from "./pages/ReviewResults";
 import Indexing from "./pages/Indexing";
 import Observability from "./pages/Observability";
+import Reviews from "./pages/Reviews";
 import Repos from "./pages/Repos";
 
 const RepoGraph = lazy(() => import("./pages/RepoGraph"));
@@ -13,15 +14,16 @@ const RepoGraph = lazy(() => import("./pages/RepoGraph"));
 export default function App() {
   return (
     <BrowserRouter>
-      <div className="min-h-screen bg-white text-ink-950 font-mono antialiased">
-        <div className="flex min-h-screen">
+      <div className="h-screen overflow-hidden bg-white text-ink-950 font-mono antialiased">
+        <div className="flex h-screen">
           <Sidebar />
 
-          <main className="flex-1 min-w-0 px-6 py-6 lg:px-10">
+          <main className="flex-1 min-w-0 overflow-y-auto px-6 py-6 lg:px-10">
             <Routes>
               <Route path="/" element={<Home />} />
               <Route path="/review/:id" element={<ReviewStatus />} />
               <Route path="/review/:id/results" element={<ReviewResults />} />
+              <Route path="/reviews" element={<Reviews />} />
               <Route path="/repos" element={<Repos />} />
               <Route
                 path="/repo/:repoId"

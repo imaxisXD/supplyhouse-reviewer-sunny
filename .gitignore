@@ -16,6 +16,7 @@ repos/
 
 # logs
 *.log
+logs/
 
 # dashboard build
 dashboard/dist
@@ -35,3 +36,8 @@ coverage
 # IDE
 .idea
 .vscode
+
+# Mastra observability data
+data/
+
+examples/

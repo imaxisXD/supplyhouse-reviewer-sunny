@@ -1,8 +1,9 @@
-import { Worker } from "bullmq";
+import { Worker, UnrecoverableError } from "bullmq";
 import type { Job } from "bullmq";
 import type { ReviewJob } from "../types/review.ts";
 import { executeReview } from "../review/workflow.ts";
 import { createLogger } from "../config/logger.ts";
+import { createReviewSessionLogger } from "../config/session-logger.ts";
 import { deleteToken } from "../utils/token-store.ts";
 import { reviewQueue, QUEUE_NAME, REDIS_URL } from "./queue-instance.ts";
 
@@ -57,25 +58,41 @@ export function startReviewWorker(): Worker {
 }
 
 async function processJob(job: ReviewJob): Promise<void> {
-  try {
-    const result = await executeReview(job);
+  // Create session-specific logger for this review
+  const sessionLog = createReviewSessionLogger({
+    reviewId: job.id,
+    workspace: job.workspace,
+    repoSlug: job.repoSlug,
+    prNumber: job.prNumber,
+    branch: job.branch,
+  });
 
-    log.info(
+  try {
+    sessionLog.info({ prUrl: job.prUrl }, "Review session started");
+
+    const result = await executeReview(job, sessionLog);
+
+    sessionLog.info(
       {
         reviewId: job.id,
         totalFindings: result.summary.totalFindings,
         durationMs: result.summary.durationMs,
       },
-      "Review job completed",
+      "Review session completed",
     );
   } catch (error) {
     const errorMessage =
       error instanceof Error ? error.message : String(error);
 
-    log.error(
+    sessionLog.error(
       { reviewId: job.id, error: errorMessage },
-      "Review job failed",
+      "Review session failed",
     );
+
+    // Don't retry cancelled jobs — the cancel flag will just trip again
+    if (errorMessage.includes("cancelled") || errorMessage.includes("Cancelled")) {
+      throw new UnrecoverableError(errorMessage);
+    }
     throw error;
   }
 }

@@ -3,6 +3,7 @@ import { MODELS } from "../mastra/models.ts";
 import { queryCallersTool, queryImportsTool, queryImpactTool } from "../tools/graph-tools.ts";
 import { grepCodebaseTool, findUsagesTool } from "../tools/search-tools.ts";
 import { readFileTool } from "../tools/code-tools.ts";
+import { normalizeToolNames } from "../tools/tool-normalization.ts";
 
 export const apiChangeAgent = new Agent({
   id: "api-change-agent",
@@ -61,9 +62,15 @@ export const apiChangeAgent = new Agent({
 4. **Search For Stale Usages**: Use grep_codebase or find_usages to find any remaining references to old names/types.
 5. **Assess Impact**: Use query_impact for high-level impact assessment.
 
+## Evidence Requirements
+
+- Always use **query_callers** or **find_usages** for any API-change finding.
+- **Include \`affectedFiles\`** with at least one concrete caller/usage. If you cannot find callers/usages, **return no findings**.
+- Only mark severity **high/critical** when a breaking caller is confirmed.
+
 ## Output Format
 
-Return your findings as a JSON object with a "findings" array:
+Return your findings as a JSON object with a "findings" array. Each finding must include "lineId" (e.g. "L123") and "lineText" (the code text after the diff marker):
 
 \`\`\`json
 {
@@ -71,6 +78,8 @@ Return your findings as a JSON object with a "findings" array:
     {
       "file": "src/services/user.ts",
       "line": 15,
+      "lineId": "L15",
+      "lineText": "return { contactInfo: { email: user.email } };",
       "severity": "high",
       "category": "api-change",
       "title": "Breaking change: return type of getUser changed",
@@ -97,12 +106,12 @@ Return your findings as a JSON object with a "findings" array:
 
 If no API changes or breaking changes are found, return {"findings": []}.`,
   model: MODELS.apiChange,
-  tools: {
+  tools: normalizeToolNames({
     query_callers: queryCallersTool,
     query_imports: queryImportsTool,
     query_impact: queryImpactTool,
     grep_codebase: grepCodebaseTool,
     find_usages: findUsagesTool,
     read_file: readFileTool,
-  },
+  }),
 });

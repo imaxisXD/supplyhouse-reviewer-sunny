@@ -3,6 +3,9 @@ import { Link } from "react-router-dom";
 import { getMetrics, getReviewsList, getHealth, getReviewResult } from "../api/client";
 import type { Metrics, ReviewListItem, AgentTrace } from "../api/client";
 import { advanceJourneyStep } from "../journey";
+import MastraTraceViewer from "../components/MastraTraceViewer";
+
+type Tab = "overview" | "traces";
 
 const panelClass =
   "border border-ink-900 bg-white p-4";
@@ -15,6 +18,7 @@ const tableRowClass = "border-t border-ink-900 hover:bg-warm-100/60 transition";
 const tableCellClass = "px-4 py-3 text-ink-700";
 
 export default function Observability() {
+  const [activeTab, setActiveTab] = useState<Tab>("overview");
   const [metrics, setMetrics] = useState<Metrics | null>(null);
   const [reviews, setReviews] = useState<ReviewListItem[]>([]);
   const [health, setHealth] = useState<Record<string, unknown> | null>(null);
@@ -71,10 +75,40 @@ export default function Observability() {
       <div>
         <div className="text-[11px] uppercase tracking-[0.45em] text-ink-600">Observability</div>
         <h1 className="mt-2 text-2xl font-semibold text-ink-950">Observability</h1>
-        <p className="mt-2 text-sm text-ink-700">System-wide metrics, recent reviews, and breaker states.</p>
+        <p className="mt-2 text-sm text-ink-700">System-wide metrics, recent reviews, and Mastra traces.</p>
       </div>
 
-      <div className="grid grid-cols-2 gap-3 lg:grid-cols-4">
+      {/* Tab navigation */}
+      <div className="flex gap-1 border-b border-ink-900">
+        <button
+          onClick={() => setActiveTab("overview")}
+          className={`px-4 py-2 text-sm font-medium transition-colors ${
+            activeTab === "overview"
+              ? "border-b-2 border-brand-500 text-brand-700"
+              : "text-ink-600 hover:text-ink-800"
+          }`}
+        >
+          Overview
+        </button>
+        <button
+          onClick={() => setActiveTab("traces")}
+          className={`px-4 py-2 text-sm font-medium transition-colors ${
+            activeTab === "traces"
+              ? "border-b-2 border-brand-500 text-brand-700"
+              : "text-ink-600 hover:text-ink-800"
+          }`}
+        >
+          Mastra Traces
+        </button>
+      </div>
+
+      {/* Mastra Traces Tab */}
+      {activeTab === "traces" && <MastraTraceViewer />}
+
+      {/* Overview Tab */}
+      {activeTab === "overview" && (
+        <>
+          <div className="grid grid-cols-2 gap-3 lg:grid-cols-4">
         <div className={statCardClass}>
           <div className={statLabelClass}>Total Reviews</div>
           <div className={statValueClass}>{metrics.totalReviews}</div>
@@ -237,6 +271,8 @@ export default function Observability() {
           </div>
         )}
       </div>
+        </>
+      )}
     </div>
   );
 }

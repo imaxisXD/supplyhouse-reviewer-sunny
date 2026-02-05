@@ -25,6 +25,114 @@ function parsePrUrl(url: string) {
 
 export const reviewRoutes = new Elysia({ prefix: "/api/review" })
   .post(
+    "/validate-token",
+    async ({ body, set }) => {
+      const trimmedToken = body.token.trim();
+      if (!trimmedToken) {
+        set.status = 400;
+        return { valid: false, error: "Token must not be empty" };
+      }
+
+      const parsed = parsePrUrl(body.prUrl.trim());
+      if (!parsed) {
+        set.status = 400;
+        return { valid: false, error: "Invalid BitBucket PR URL format" };
+      }
+
+      // Step 1: Fetch authenticated user to get real Bitbucket username
+      let bbUsername = "";
+      try {
+        const user = await bitbucketBreaker.execute(() =>
+          bitbucketClient.getAuthenticatedUser(trimmedToken),
+        );
+        bbUsername = user.username;
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        if (message.includes("Authentication failed") || message.includes("401")) {
+          return { valid: false, error: "Authentication failed. Check your email and app password." };
+        }
+        return { valid: false, error: `Token validation failed: ${message}` };
+      }
+
+      // Step 2: Fetch PR details to verify PR access
+      let prDetails;
+      try {
+        prDetails = await bitbucketBreaker.execute(() =>
+          bitbucketClient.getPRDetails(
+            parsed.workspace,
+            parsed.repoSlug,
+            parsed.prNumber,
+            trimmedToken,
+          ),
+        );
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        if (message.includes("not found") || message.includes("404")) {
+          return { valid: false, error: "PR not found. Check the URL and ensure the token has repository read access." };
+        }
+        return { valid: false, error: `PR access check failed: ${message}` };
+      }
+
+      // Step 3: Verify git clone access via ls-remote
+      // Build the clone token using the real Bitbucket username (not email)
+      const cloneToken = trimmedToken.includes(":")
+        ? `${bbUsername}:${trimmedToken.split(":").slice(1).join(":")}`
+        : trimmedToken;
+      const repoUrl = `https://bitbucket.org/${parsed.workspace}/${parsed.repoSlug}.git`;
+
+      let cloneAccessOk = false;
+      try {
+        const url = new URL(repoUrl);
+        if (cloneToken.includes(":")) {
+          const [user, ...passParts] = cloneToken.split(":");
+          url.username = encodeURIComponent(user!);
+          url.password = encodeURIComponent(passParts.join(":"));
+        } else {
+          url.username = "x-token-auth";
+          url.password = cloneToken;
+        }
+
+        const proc = Bun.spawn(
+          ["git", "ls-remote", "--exit-code", url.toString()],
+          {
+            stdout: "pipe",
+            stderr: "pipe",
+            env: { ...process.env, GIT_TERMINAL_PROMPT: "0" },
+          },
+        );
+        const exitCode = await proc.exited;
+        cloneAccessOk = exitCode === 0;
+      } catch {
+        cloneAccessOk = false;
+      }
+
+      if (!cloneAccessOk) {
+        return {
+          valid: false,
+          error: `API token works but git clone access failed. Ensure your App Password has repository read access.`,
+          username: bbUsername,
+        };
+      }
+
+      return {
+        valid: true,
+        username: bbUsername,
+        pr: {
+          title: prDetails.title,
+          author: prDetails.author.displayName,
+          sourceBranch: prDetails.sourceBranch,
+          targetBranch: prDetails.targetBranch,
+        },
+      };
+    },
+    {
+      body: t.Object({
+        prUrl: t.String({ minLength: 1 }),
+        token: t.String({ minLength: 1 }),
+      }),
+    }
+  )
+  .post(
     "/",
     async ({ body, set }) => {
       const trimmedToken = body.token.trim();
@@ -85,6 +193,7 @@ export const reviewRoutes = new Elysia({ prefix: "/api/review" })
         phase: "queued",
         percentage: 0,
         findings: [],
+        prUrl: trimmedUrl,
         startedAt: new Date().toISOString(),
       }));
 
@@ -129,9 +238,10 @@ export const reviewRoutes = new Elysia({ prefix: "/api/review" })
     const { id } = params;
     try {
       const statusData = await redis.get(`review:${id}`);
+      let status: Record<string, unknown> | null = null;
       if (statusData) {
         try {
-          const status = JSON.parse(statusData);
+          status = JSON.parse(statusData) as Record<string, unknown>;
           if (status.phase === "complete" || status.phase === "failed") {
             return { message: `Review already ${status.phase}` };
           }
@@ -142,6 +252,28 @@ export const reviewRoutes = new Elysia({ prefix: "/api/review" })
 
       // Set cancel flag first — worker will see it on next assertNotCancelled call
       await markCancelled(reviewCancelKey(id));
+
+      if (status) {
+        status.phase = "cancelling";
+        if ("completedAt" in status) delete status.completedAt;
+        if ("error" in status) delete status.error;
+        const percentage = typeof status.percentage === "number" ? status.percentage : 0;
+        const findingsCount =
+          typeof status.findingsCount === "number"
+            ? status.findingsCount
+            : Array.isArray(status.findings)
+              ? status.findings.length
+              : 0;
+        await redis.set(`review:${id}`, JSON.stringify(status));
+        await publish(`review:events:${id}`, {
+          type: "PHASE_CHANGE",
+          phase: "cancelling",
+          percentage,
+          findingsCount,
+          ...(typeof status.currentFile === "string" ? { currentFile: status.currentFile } : {}),
+          ...(Array.isArray(status.agentsRunning) ? { agentsRunning: status.agentsRunning } : {}),
+        });
+      }
 
       let jobIsActive = false;
       const job = await reviewQueue.getJob(id);
@@ -162,11 +294,11 @@ export const reviewRoutes = new Elysia({ prefix: "/api/review" })
 
       if (!jobIsActive && statusData) {
         try {
-          const status = JSON.parse(statusData);
-          status.phase = "failed";
-          status.error = "Cancelled by user";
-          status.completedAt = new Date().toISOString();
-          await redis.set(`review:${id}`, JSON.stringify(status));
+          const statusPayload = JSON.parse(statusData) as Record<string, unknown>;
+          statusPayload.phase = "failed";
+          statusPayload.error = "Cancelled by user";
+          statusPayload.completedAt = new Date().toISOString();
+          await redis.set(`review:${id}`, JSON.stringify(statusPayload));
         } catch {
           // Ignore parse errors
         }

@@ -38,11 +38,23 @@ function shouldRetry(error: unknown): boolean {
 }
 
 /**
+ * Build the Authorization header value.
+ * If the token contains ":" it's treated as username:app_password (Basic auth).
+ * Otherwise it's treated as an OAuth2 / Bearer token.
+ */
+function authHeader(token: string): string {
+  if (token.includes(":")) {
+    return `Basic ${Buffer.from(token).toString("base64")}`;
+  }
+  return `Bearer ${token}`;
+}
+
+/**
  * Build standard headers for BitBucket API requests.
  */
 function buildHeaders(token: string): Record<string, string> {
   return {
-    Authorization: `Bearer ${token}`,
+    Authorization: authHeader(token),
     Accept: "application/json",
   };
 }
@@ -59,6 +71,38 @@ export class BitBucketClient {
   constructor(baseUrl: string) {
     // Strip trailing slash for consistent URL building
     this.baseUrl = baseUrl.replace(/\/+$/, "");
+  }
+
+  // ---------------------------------------------------------------------------
+  // Authenticated User
+  // ---------------------------------------------------------------------------
+
+  /**
+   * Fetch the authenticated user profile.
+   * GET /user
+   */
+  async getAuthenticatedUser(token: string): Promise<{ username: string; displayName: string; email?: string }> {
+    const endpoint = "/user";
+
+    return withRetry(
+      async () => {
+        const url = `${this.baseUrl}${endpoint}`;
+        const response = await fetch(url, {
+          method: "GET",
+          headers: buildHeaders(token),
+        });
+
+        await this.assertOk(response, endpoint);
+        const body = (await response.json()) as Record<string, unknown>;
+
+        return {
+          username: (body.username as string) ?? "",
+          displayName: (body.display_name as string) ?? "",
+          email: (body.email as string) ?? undefined,
+        };
+      },
+      { retryOn: shouldRetry },
+    );
   }
 
   // ---------------------------------------------------------------------------
@@ -120,7 +164,7 @@ export class BitBucketClient {
         const response = await fetch(url, {
           method: "GET",
           headers: {
-            Authorization: `Bearer ${token}`,
+            Authorization: authHeader(token),
             Accept: "text/plain",
           },
         });

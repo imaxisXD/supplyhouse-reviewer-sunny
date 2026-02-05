@@ -38,7 +38,29 @@ export async function buildGraph(
   repoId: string,
   files: ParsedFile[],
 ): Promise<void> {
-  log.info({ repoId, fileCount: files.length }, "Building code graph");
+  // Gather stats about what the parsers provided
+  let totalFunctions = 0;
+  let functionsWithBody = 0;
+  let totalClasses = 0;
+  let totalImports = 0;
+  for (const file of files) {
+    totalFunctions += file.functions.length;
+    for (const fn of file.functions) {
+      if (fn.body) functionsWithBody++;
+    }
+    for (const cls of file.classes) {
+      totalClasses++;
+      for (const method of cls.methods) {
+        totalFunctions++;
+        if (method.body) functionsWithBody++;
+      }
+    }
+    totalImports += file.imports.length;
+  }
+  log.info(
+    { repoId, fileCount: files.length, totalFunctions, functionsWithBody, totalClasses, totalImports },
+    "Building code graph - parser stats"
+  );
 
   // -- 1. Create repo-level constraint / index (best-effort) --------------
   await safeRunCypher("CREATE INDEX ON :File(path)");
@@ -169,6 +191,10 @@ export async function buildGraph(
 
   // -- 6. CALLS edges (analysed from function bodies) ---------------------
   const callEdges = extractCallEdges(repoId, files);
+  log.info({ repoId, callEdgesExtracted: callEdges.length }, "CALLS edges extracted");
+  if (callEdges.length > 0) {
+    log.debug({ sample: callEdges.slice(0, 3) }, "Sample CALLS edges");
+  }
   await batchMerge(
     `UNWIND $batch AS row
      MATCH (caller:Function {name: row.callerName, file: row.callerFile, repoId: row.repoId})
@@ -181,6 +207,10 @@ export async function buildGraph(
 
   // -- 7. IMPORTS edges (File -> File, resolved loosely) ------------------
   const importEdges = extractImportEdges(repoId, files);
+  log.info({ repoId, importEdgesExtracted: importEdges.length }, "IMPORTS edges extracted");
+  if (importEdges.length > 0) {
+    log.debug({ sample: importEdges.slice(0, 3) }, "Sample IMPORTS edges");
+  }
   await batchMerge(
     `UNWIND $batch AS row
      MATCH (src:File {path: row.srcFile, repoId: row.repoId})
@@ -192,6 +222,10 @@ export async function buildGraph(
 
   // -- 8. EXTENDS / IMPLEMENTS edges (Class -> Class) ---------------------
   const inheritanceEdges = extractInheritanceEdges(repoId, files);
+  log.info(
+    { repoId, extendsEdges: inheritanceEdges.extends.length, implementsEdges: inheritanceEdges.implements.length },
+    "Inheritance edges extracted"
+  );
   await batchMerge(
     `UNWIND $batch AS row
      MATCH (child:Class {name: row.childName, file: row.childFile, repoId: row.repoId})
@@ -459,11 +493,32 @@ function resolveImportSource(
 
 function findBySuffix(source: string, pathSet: Set<string>): string | null {
   const cleaned = source.replace(/^[@/]+/, "");
+
+  // For JavaScript/TypeScript imports
   for (const p of pathSet) {
     if (p.endsWith(`/${cleaned}`) || p.endsWith(`/${cleaned}.ts`) || p.endsWith(`/${cleaned}.tsx`) || p.endsWith(`/${cleaned}.js`)) {
       return p;
     }
   }
+
+  // For Java imports: convert package notation to path (com.example.Foo -> com/example/Foo.java)
+  const javaPath = cleaned.replace(/\./g, "/");
+  for (const p of pathSet) {
+    if (p.endsWith(`/${javaPath}.java`) || p.endsWith(`${javaPath}.java`)) {
+      return p;
+    }
+  }
+
+  // Also try matching just the class name for Java (last segment)
+  const lastSegment = cleaned.split(".").pop();
+  if (lastSegment) {
+    for (const p of pathSet) {
+      if (p.endsWith(`/${lastSegment}.java`)) {
+        return p;
+      }
+    }
+  }
+
   return null;
 }
 

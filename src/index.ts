@@ -13,6 +13,7 @@ import { reviewsListRoutes } from "./api/reviews-list.ts";
 import { wsRoutes } from "./api/ws.ts";
 import { graphRoutes } from "./api/graph.ts";
 import { journeyRoutes } from "./api/journey.ts";
+import { traceRoutes } from "./api/traces.ts";
 import { startReviewWorker } from "./queue/review-worker.ts";
 import { startIndexWorker } from "./queue/index-worker.ts";
 
@@ -90,6 +91,7 @@ const app = new Elysia()
   .use(journeyRoutes)
   .use(wsRoutes)
   .use(graphRoutes)
+  .use(traceRoutes)
   .listen({
     port,
     ...(tlsCert && tlsKey

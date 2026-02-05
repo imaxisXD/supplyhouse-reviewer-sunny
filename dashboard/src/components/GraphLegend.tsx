@@ -1,4 +1,4 @@
-import type { GraphNodeLabel, GraphEdgeType } from "../api/client";
+import type { GraphNodeLabel, GraphEdgeType, GraphView } from "../api/client";
 
 export const NODE_COLORS: Record<GraphNodeLabel, string> = {
   File: "#f36a28",
@@ -22,12 +22,22 @@ export const NODE_SIZES: Record<GraphNodeLabel, number> = {
 };
 
 interface GraphLegendProps {
+  graphView: GraphView;
+  onGraphViewChange: (view: GraphView) => void;
   nodeFilters: Record<GraphNodeLabel, boolean>;
   edgeFilters: Record<GraphEdgeType, boolean>;
   onToggleNode: (label: GraphNodeLabel) => void;
   onToggleEdge: (type: GraphEdgeType) => void;
   searchQuery: string;
   onSearchChange: (query: string) => void;
+  renderInfo?: {
+    capped: boolean;
+    totalNodes: number;
+    totalLinks: number;
+    renderNodes: number;
+    renderLinks: number;
+  };
+  simplified?: boolean;
   stats: {
     totalNodes: number;
     totalLinks: number;
@@ -37,16 +47,66 @@ interface GraphLegendProps {
 }
 
 export default function GraphLegend({
+  graphView,
+  onGraphViewChange,
   nodeFilters,
   edgeFilters,
   onToggleNode,
   onToggleEdge,
   searchQuery,
   onSearchChange,
+  renderInfo,
+  simplified,
   stats,
 }: GraphLegendProps) {
   return (
     <div className="absolute top-4 left-4 z-10 w-64 bg-white border border-ink-900 overflow-hidden">
+      {/* Graph view */}
+      <div className="p-3 border-b border-ink-900">
+        <p className="text-[10px] uppercase tracking-wider text-ink-600 mb-2">Graph View</p>
+        <div className="grid grid-cols-2 gap-2">
+          <button
+            type="button"
+            onClick={() => onGraphViewChange("overview")}
+            className={`px-2 py-1 text-[10px] uppercase tracking-wider border border-ink-900 transition-colors ${
+              graphView === "overview"
+                ? "bg-ink-900 text-white"
+                : "bg-white text-ink-700 hover:text-ink-900 hover:bg-warm-50"
+            }`}
+          >
+            Overview
+          </button>
+          <button
+            type="button"
+            onClick={() => onGraphViewChange("full")}
+            className={`px-2 py-1 text-[10px] uppercase tracking-wider border border-ink-900 transition-colors ${
+              graphView === "full"
+                ? "bg-ink-900 text-white"
+                : "bg-white text-ink-700 hover:text-ink-900 hover:bg-warm-50"
+            }`}
+          >
+            Full
+          </button>
+        </div>
+        <p className="text-[10px] text-ink-500 mt-2">
+          Overview aggregates relationships at the file level (calls, imports, inheritance) for speed.
+          Full includes all nodes and edges and can be slow on large repos.
+        </p>
+      </div>
+
+      {renderInfo?.capped && (
+        <div className="px-3 py-2 border-b border-ink-900 text-[10px] text-ink-700 bg-warm-50">
+          Rendering {renderInfo.renderNodes} of {renderInfo.totalNodes} nodes and{" "}
+          {renderInfo.renderLinks} of {renderInfo.totalLinks} edges to keep the browser responsive.
+        </div>
+      )}
+
+      {simplified && !renderInfo?.capped && (
+        <div className="px-3 py-2 border-b border-ink-900 text-[10px] text-ink-600 bg-warm-50">
+          Simplified rendering enabled for performance.
+        </div>
+      )}
+
       {/* Search */}
       <div className="p-3 border-b border-ink-900">
         <input

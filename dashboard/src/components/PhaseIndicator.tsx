@@ -1,10 +1,12 @@
 const PHASES = [
   { key: "queued", label: "Queued" },
   { key: "fetching-pr", label: "Fetching PR" },
+  { key: "indexing", label: "Indexing" },
   { key: "building-context", label: "Building Context" },
   { key: "running-agents", label: "Running Agents" },
   { key: "synthesizing", label: "Synthesizing" },
   { key: "posting-comments", label: "Posting Comments" },
+  { key: "cancelling", label: "Cancelling" },
   { key: "complete", label: "Complete" },
 ];
 

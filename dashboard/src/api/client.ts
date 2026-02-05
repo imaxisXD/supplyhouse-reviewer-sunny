@@ -26,6 +26,21 @@ export interface IndexSubmission {
   framework?: string;
 }
 
+export interface ForceReindexSubmission {
+  repoId: string;
+  token: string;
+  branch?: string;
+  framework?: string;
+}
+
+export interface RepoMeta {
+  repoId: string;
+  repoUrl: string;
+  branch?: string;
+  framework?: string;
+  updatedAt?: string;
+}
+
 export interface IndexFramework {
   id: string;
   name: string;
@@ -83,6 +98,8 @@ export interface AgentTrace {
   findingsCount: number;
   status: "success" | "failed" | "skipped";
   error?: string;
+  /** Reference to Mastra's native trace for detailed span analysis */
+  mastraTraceId?: string;
 }
 
 export interface ReviewResult {
@@ -120,6 +137,8 @@ export interface ReviewListItem {
   filesAnalyzed: number;
   startedAt: string;
   completedAt?: string;
+  error?: string;
+  prUrl?: string;
 }
 
 export interface Metrics {
@@ -156,6 +175,7 @@ export type WSEventType =
   | "PHASE_CHANGE"
   | "AGENT_COMPLETE"
   | "FINDING_ADDED"
+  | "ACTIVITY_LOG"
   | "REVIEW_COMPLETE"
   | "REVIEW_FAILED";
 
@@ -168,6 +188,8 @@ export interface WSEvent {
   agentsRunning?: string[];
   agent?: string;
   durationMs?: number;
+  message?: string;
+  timestamp?: string;
   finding?: {
     file: string;
     line: number;
@@ -182,11 +204,34 @@ export interface WSEvent {
     costUsd: number;
   };
   error?: string;
+  /** Mastra trace ID for viewing detailed spans */
+  mastraTraceId?: string;
 }
 
 // ---------------------------------------------------------------------------
 // Review APIs
 // ---------------------------------------------------------------------------
+
+export interface TokenValidationResult {
+  valid: boolean;
+  error?: string;
+  username?: string;
+  pr?: {
+    title: string;
+    author: string;
+    sourceBranch: string;
+    targetBranch: string;
+  };
+}
+
+export async function validateToken(prUrl: string, token: string): Promise<TokenValidationResult> {
+  const res = await fetch(`${BASE_URL}/api/review/validate-token`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ prUrl, token }),
+  });
+  return res.json();
+}
 
 export async function submitReview(data: ReviewSubmission): Promise<{ reviewId: string }> {
   const res = await fetch(`${BASE_URL}/api/review`, {
@@ -224,6 +269,25 @@ export async function submitIndex(data: IndexSubmission): Promise<{ indexId: str
   return res.json();
 }
 
+export async function submitForceReindex(data: ForceReindexSubmission): Promise<{ indexId: string }> {
+  const res = await fetch(`${BASE_URL}/api/index/force`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(data),
+  });
+  if (!res.ok) {
+    let message = res.statusText;
+    try {
+      const payload = await res.json();
+      message = payload?.error || payload?.message || message;
+    } catch {
+      // ignore parse errors
+    }
+    throw new Error(`Failed to submit force re-index: ${message}`);
+  }
+  return res.json();
+}
+
 export async function submitIncrementalIndex(data: IncrementalIndexSubmission): Promise<{ indexId: string }> {
   const res = await fetch(`${BASE_URL}/api/index/incremental`, {
     method: "POST",
@@ -231,6 +295,21 @@ export async function submitIncrementalIndex(data: IncrementalIndexSubmission): 
     body: JSON.stringify(data),
   });
   if (!res.ok) throw new Error(`Failed to submit incremental index: ${res.statusText}`);
+  return res.json();
+}
+
+export async function getRepoMeta(repoId: string): Promise<RepoMeta> {
+  const res = await fetch(`${BASE_URL}/api/index/meta/${encodeURIComponent(repoId)}`);
+  if (!res.ok) {
+    let message = res.statusText;
+    try {
+      const payload = await res.json();
+      message = payload?.error || payload?.message || message;
+    } catch {
+      // ignore parse errors
+    }
+    throw new Error(`Failed to fetch repo metadata: ${message}`);
+  }
   return res.json();
 }
 
@@ -290,6 +369,7 @@ export interface RepoInfo {
 }
 
 export type GraphNodeLabel = "File" | "Function" | "Class";
+export type GraphView = "overview" | "full";
 
 export type GraphEdgeType =
   | "CONTAINS"
@@ -320,6 +400,7 @@ export interface GraphLink {
   source: string;
   target: string;
   type: GraphEdgeType;
+  weight?: number;
 }
 
 export interface GraphData {
@@ -333,8 +414,15 @@ export async function getIndexedRepos(): Promise<{ repos: RepoInfo[] }> {
   return res.json();
 }
 
-export async function getRepoGraph(repoId: string): Promise<GraphData> {
-  const res = await fetch(`${BASE_URL}/api/graph/${encodeURIComponent(repoId)}`);
+export async function getRepoGraph(
+  repoId: string,
+  view: GraphView = "overview",
+): Promise<GraphData> {
+  const params = new URLSearchParams();
+  params.set("view", view);
+  const res = await fetch(
+    `${BASE_URL}/api/graph/${encodeURIComponent(repoId)}?${params.toString()}`,
+  );
   if (!res.ok) throw new Error(`Failed to get repo graph: ${res.statusText}`);
   return res.json();
 }
@@ -346,6 +434,100 @@ export async function getRepoGraph(repoId: string): Promise<GraphData> {
 export async function getHealth(): Promise<Record<string, unknown>> {
   const res = await fetch(`${BASE_URL}/health/services`);
   if (!res.ok) throw new Error(`Failed to get health: ${res.statusText}`);
+  return res.json();
+}
+
+// ---------------------------------------------------------------------------
+// Mastra Traces API
+// ---------------------------------------------------------------------------
+
+export interface MastraSpan {
+  id: string;
+  traceId: string;
+  name: string;
+  scope?: string;
+  kind?: string;
+  startTime: string;
+  endTime?: string;
+  parentSpanId?: string;
+  input?: unknown;
+  output?: unknown;
+  attributes?: Record<string, unknown>;
+  status?: {
+    code?: number;
+    message?: string;
+  };
+}
+
+export interface MastraTrace {
+  id: string;
+  name?: string;
+  scope?: string;
+  startTime: string;
+  endTime?: string;
+  attributes?: Record<string, unknown>;
+}
+
+export interface TraceListResponse {
+  traces: MastraTrace[];
+  total: number;
+  error?: string;
+}
+
+export interface TraceDetailResponse {
+  traceId: string;
+  rootSpan?: MastraSpan;
+  spans: MastraSpan[];
+  spanCount: number;
+  error?: string;
+}
+
+export interface SpansResponse {
+  spans: MastraSpan[];
+  total: number;
+  error?: string;
+}
+
+export interface TraceStatsResponse {
+  totalTraces: number;
+  totalSpans: number;
+  avgDurationMs: number;
+  spanTypeCount: Record<string, number>;
+  error?: string;
+}
+
+export async function getMastraTraces(params?: {
+  limit?: number;
+  name?: string;
+  startDate?: string;
+  endDate?: string;
+}): Promise<TraceListResponse> {
+  const searchParams = new URLSearchParams();
+  if (params?.limit) searchParams.set("limit", String(params.limit));
+  if (params?.name) searchParams.set("name", params.name);
+  if (params?.startDate) searchParams.set("startDate", params.startDate);
+  if (params?.endDate) searchParams.set("endDate", params.endDate);
+
+  const res = await fetch(`${BASE_URL}/api/traces?${searchParams}`);
+  if (!res.ok) throw new Error(`Failed to fetch traces: ${res.statusText}`);
+  return res.json();
+}
+
+export async function getMastraTrace(traceId: string): Promise<TraceDetailResponse> {
+  const res = await fetch(`${BASE_URL}/api/traces/${encodeURIComponent(traceId)}`);
+  if (!res.ok) throw new Error(`Failed to fetch trace: ${res.statusText}`);
+  return res.json();
+}
+
+export async function getMastraSpans(traceId: string): Promise<SpansResponse> {
+  const res = await fetch(`${BASE_URL}/api/traces/${encodeURIComponent(traceId)}/spans`);
+  if (!res.ok) throw new Error(`Failed to fetch spans: ${res.statusText}`);
+  return res.json();
+}
+
+export async function getMastraTraceStats(): Promise<TraceStatsResponse> {
+  const res = await fetch(`${BASE_URL}/api/traces/stats`);
+  if (!res.ok) throw new Error(`Failed to fetch trace stats: ${res.statusText}`);
   return res.json();
 }
 

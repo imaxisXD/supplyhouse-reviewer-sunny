@@ -11,6 +11,8 @@ export interface Finding {
   description: string;
   suggestion?: string;
   confidence: number;
+  lineText?: string;
+  lineId?: string;
   cwe?: string;
   relatedCode?: {
     file: string;
@@ -36,6 +38,8 @@ export interface AgentTrace {
   findingsCount: number;
   status: "success" | "failed" | "skipped";
   error?: string;
+  /** Reference to Mastra's native trace for detailed span analysis */
+  mastraTraceId?: string;
 }
 
 export interface ReviewResult {

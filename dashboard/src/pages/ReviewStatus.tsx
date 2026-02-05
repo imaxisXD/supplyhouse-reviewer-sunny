@@ -1,35 +1,45 @@
 import { useEffect, useState, useRef } from "react";
 import { useParams, useNavigate } from "react-router-dom";
-import { getReviewStatus, connectWebSocket, cancelReview } from "../api/client";
-import type { ReviewStatus as ReviewStatusType, WSEvent } from "../api/client";
+import { getReviewStatus, connectWebSocket, cancelReview, getMastraSpans } from "../api/client";
+import type { ReviewStatus as ReviewStatusType, WSEvent, MastraSpan } from "../api/client";
 import ProgressBar from "../components/ProgressBar";
 import PhaseIndicator from "../components/PhaseIndicator";
+import InlineTracePanel from "../components/InlineTracePanel";
 import { advanceJourneyStep } from "../journey";
 
 const pillBaseClass = "border px-2.5 py-1 text-xs";
 
-interface LiveFinding {
-  file: string;
-  line: number;
-  severity: string;
-  title: string;
-  agent: string;
+interface ActivityEntry {
+  type: "activity" | "finding";
+  timestamp: string;
+  // activity fields
+  message?: string;
+  // finding fields
+  file?: string;
+  line?: number;
+  severity?: string;
+  title?: string;
+  agent?: string;
 }
 
 interface CompletedAgent {
   agent: string;
   findingsCount: number;
   durationMs: number;
+  mastraTraceId?: string;
 }
 
 export default function ReviewStatus() {
   const { id } = useParams<{ id: string }>();
   const navigate = useNavigate();
   const [status, setStatus] = useState<ReviewStatusType | null>(null);
-  const [liveFindings, setLiveFindings] = useState<LiveFinding[]>([]);
+  const [activityLog, setActivityLog] = useState<ActivityEntry[]>([]);
   const [completedAgents, setCompletedAgents] = useState<CompletedAgent[]>([]);
   const [error, setError] = useState("");
   const [cancelling, setCancelling] = useState(false);
+  const [selectedTraceAgent, setSelectedTraceAgent] = useState<string | null>(null);
+  const [traceSpans, setTraceSpans] = useState<MastraSpan[]>([]);
+  const [traceLoading, setTraceLoading] = useState(false);
   const cleanupRef = useRef<(() => void) | null>(null);
   const feedRef = useRef<HTMLDivElement>(null);
 
@@ -67,11 +77,24 @@ export default function ReviewStatus() {
             });
             break;
 
+          case "ACTIVITY_LOG":
+            setActivityLog((prev) => [
+              ...prev,
+              {
+                type: "activity",
+                timestamp: event.timestamp ?? new Date().toISOString(),
+                message: event.message,
+              },
+            ]);
+            break;
+
           case "FINDING_ADDED":
             if (event.finding) {
-              setLiveFindings((prev) => [
+              setActivityLog((prev) => [
                 ...prev,
                 {
+                  type: "finding",
+                  timestamp: new Date().toISOString(),
                   file: event.finding!.file,
                   line: event.finding!.line,
                   severity: event.finding!.severity,
@@ -90,6 +113,7 @@ export default function ReviewStatus() {
                   agent: event.agent!,
                   findingsCount: event.findingsCount ?? 0,
                   durationMs: event.durationMs ?? 0,
+                  mastraTraceId: event.mastraTraceId,
                 },
               ]);
             }
@@ -118,18 +142,19 @@ export default function ReviewStatus() {
     };
   }, [id, navigate]);
 
-  // Auto-scroll the findings feed
+  // Auto-scroll the activity feed
   useEffect(() => {
     if (feedRef.current) {
       feedRef.current.scrollTop = feedRef.current.scrollHeight;
     }
-  }, [liveFindings]);
+  }, [activityLog]);
 
   const handleCancel = async () => {
     if (!id || cancelling) return;
     setCancelling(true);
     try {
       await cancelReview(id);
+      setStatus((prev) => (prev ? { ...prev, phase: "cancelling" } : prev));
     } catch (err) {
       setError(err instanceof Error ? err.message : "Failed to cancel review");
     } finally {
@@ -149,6 +174,30 @@ export default function ReviewStatus() {
         return "text-sky-700";
       default:
         return "text-ink-600";
+    }
+  };
+
+  const handleAgentClick = async (agent: CompletedAgent) => {
+    if (!agent.mastraTraceId) return;
+
+    // Toggle off if clicking same agent
+    if (selectedTraceAgent === agent.agent) {
+      setSelectedTraceAgent(null);
+      setTraceSpans([]);
+      return;
+    }
+
+    setSelectedTraceAgent(agent.agent);
+    setTraceLoading(true);
+    setTraceSpans([]);
+
+    try {
+      const result = await getMastraSpans(agent.mastraTraceId);
+      setTraceSpans(result.spans);
+    } catch (err) {
+      console.error("Failed to load trace:", err);
+    } finally {
+      setTraceLoading(false);
     }
   };
 
@@ -190,15 +239,19 @@ export default function ReviewStatus() {
     );
   }
 
+  const isCancelling = status.phase === "cancelling";
+
   return (
     <div className="mx-auto max-w-2xl space-y-6">
       <div>
         <div className="flex items-center justify-between">
           <div>
             <div className="text-[11px] uppercase tracking-[0.45em] text-ink-600">Review</div>
-            <h1 className="mt-2 text-2xl font-semibold text-ink-950">Review in Progress</h1>
+            <h1 className="mt-2 text-2xl font-semibold text-ink-950">
+              {isCancelling ? "Cancelling Review" : "Review in Progress"}
+            </h1>
           </div>
-        {status.phase !== "complete" && status.phase !== "failed" && (
+        {status.phase !== "complete" && status.phase !== "failed" && !isCancelling && (
           <button
             type="button"
             onClick={handleCancel}
@@ -240,54 +293,90 @@ export default function ReviewStatus() {
 
         {completedAgents.length > 0 && (
           <div>
-            <p className="text-sm text-ink-700 mb-2">Completed Agents</p>
+            <p className="text-sm text-ink-700 mb-2">
+              Completed Agents
+              <span className="ml-2 text-ink-500 text-xs font-normal">(click to view trace)</span>
+            </p>
             <div className="flex gap-2 flex-wrap">
               {completedAgents.map((a, i) => (
-                <span
+                <button
                   key={`${a.agent}-${i}`}
-                  className={`${pillBaseClass} border-emerald-500/40 bg-emerald-50 text-emerald-700`}
+                  onClick={() => handleAgentClick(a)}
+                  disabled={!a.mastraTraceId}
+                  className={`${pillBaseClass} transition-all ${
+                    selectedTraceAgent === a.agent
+                      ? "border-brand-500 bg-brand-500/10 text-brand-700 ring-1 ring-brand-500/30"
+                      : a.mastraTraceId
+                      ? "border-emerald-500/40 bg-emerald-50 text-emerald-700 hover:border-emerald-500 hover:bg-emerald-100 cursor-pointer"
+                      : "border-emerald-500/40 bg-emerald-50 text-emerald-700 opacity-60 cursor-not-allowed"
+                  }`}
                 >
                   {a.agent}
                   <span className="ml-1.5 opacity-70">
                     {a.findingsCount} findings &middot; {(a.durationMs / 1000).toFixed(1)}s
                   </span>
-                </span>
+                  {a.mastraTraceId && (
+                    <span className="ml-1.5 text-[10px]">
+                      {selectedTraceAgent === a.agent ? "▼" : "▶"}
+                    </span>
+                  )}
+                </button>
               ))}
             </div>
           </div>
         )}
 
+        {/* Trace Panel - shows when an agent is selected */}
+        {selectedTraceAgent && (
+          <InlineTracePanel
+            spans={traceSpans}
+            loading={traceLoading}
+            onClose={() => {
+              setSelectedTraceAgent(null);
+              setTraceSpans([]);
+            }}
+            agentName={selectedTraceAgent}
+          />
+        )}
+
         <div>
           <p className="text-sm text-ink-700 mb-2">
-            Live Findings Feed
-            {liveFindings.length > 0 && (
-              <span className="ml-2 text-ink-600">({liveFindings.length})</span>
+            Activity Log
+            {activityLog.length > 0 && (
+              <span className="ml-2 text-ink-600">({activityLog.length})</span>
             )}
           </p>
           <div
             ref={feedRef}
             className="border border-ink-900 bg-warm-50 p-3 max-h-80 overflow-y-auto space-y-1.5"
           >
-            {liveFindings.length === 0 && (
-              <p className="text-ink-600 text-sm">Waiting for findings...</p>
+            {activityLog.length === 0 && (
+              <p className="text-ink-600 text-sm">Waiting for activity...</p>
             )}
-            {liveFindings.map((f, i) => (
-              <div
-                key={i}
-                className="flex items-start gap-2 text-xs"
-              >
-                <span
-                  className={`shrink-0 font-semibold uppercase ${severityColor(f.severity)}`}
-                >
-                  {f.severity}
-                </span>
-                <span className="text-ink-900 flex-1 min-w-0 truncate">{f.title}</span>
-                <span className="text-ink-600 font-mono shrink-0">
-                  {f.file}:{f.line}
-                </span>
-                <span className="text-ink-500 shrink-0">{f.agent}</span>
-              </div>
-            ))}
+            {activityLog.map((entry, i) =>
+              entry.type === "activity" ? (
+                <div key={i} className="flex items-start gap-2 text-xs">
+                  <span className="shrink-0 text-ink-500">--</span>
+                  <span className="text-ink-700 flex-1 min-w-0">{entry.message}</span>
+                  <span className="text-ink-400 font-mono shrink-0 text-[10px]">
+                    {new Date(entry.timestamp).toLocaleTimeString()}
+                  </span>
+                </div>
+              ) : (
+                <div key={i} className="flex items-start gap-2 text-xs">
+                  <span
+                    className={`shrink-0 font-semibold uppercase ${severityColor(entry.severity ?? "info")}`}
+                  >
+                    {entry.severity}
+                  </span>
+                  <span className="text-ink-900 flex-1 min-w-0 truncate">{entry.title}</span>
+                  <span className="text-ink-600 font-mono shrink-0">
+                    {entry.file}:{entry.line}
+                  </span>
+                  <span className="text-ink-500 shrink-0">{entry.agent}</span>
+                </div>
+              ),
+            )}
           </div>
         </div>
       </div>
