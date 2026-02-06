@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useState } from "react";
-import { getJourney, setJourney } from "./api/client";
+import { api, unwrap } from "./api/eden";
 
 const STEP_ORDER = ["submit", "review", "results", "explore"] as const;
 
@@ -64,7 +64,7 @@ function publishJourneyStep(step: JourneyStepId): void {
 async function loadJourneyStep(): Promise<JourneyStepId> {
   if (cachedLoaded) return cachedStep;
   if (inflightLoad) return inflightLoad;
-  inflightLoad = getJourney()
+  inflightLoad = unwrap(api.api.journey.get())
     .then((state) => {
       publishJourneyStep(state.step);
       cachedLoaded = true;
@@ -86,7 +86,7 @@ export async function advanceJourneyStep(step: JourneyStepId): Promise<JourneySt
 
   publishJourneyStep(step);
   try {
-    const updated = await setJourney(step);
+    const updated = await unwrap(api.api.journey.put({ step }));
     publishJourneyStep(updated.step);
     return updated.step;
   } catch {

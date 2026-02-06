@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { getMastraSpans } from "../api/client";
+import { api, unwrap } from "../api/eden";
 import { useMastraTraceStats, useTracesByReview } from "../api/hooks";
 import { IconChevronRightOutline24 } from "nucleo-core-essential-outline-24";
 import type {
@@ -55,8 +55,8 @@ export default function MastraTraceViewer() {
     setError("");
 
     try {
-      const result = await getMastraSpans(agent.traceId);
-      setSpans(result.spans);
+      const result = await unwrap(api.api.traces({ traceId: agent.traceId }).spans.get());
+      setSpans((result as { spans: MastraSpan[] }).spans);
     } catch (err) {
       setError(err instanceof Error ? err.message : "Failed to load spans");
     } finally {

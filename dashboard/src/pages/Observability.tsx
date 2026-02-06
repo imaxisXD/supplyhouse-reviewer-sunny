@@ -1,7 +1,7 @@
 import { Fragment, useEffect, useState } from "react";
 import { Link } from "react-router-dom";
 import { mutate } from "swr";
-import { getReviewResult } from "../api/client";
+import { api, unwrap } from "../api/eden";
 import { useMetrics, useReviewsList, useHealth, useRefreshCosts } from "../api/hooks";
 import type { AgentTrace } from "../api/types";
 import { advanceJourneyStep } from "../journey";
@@ -41,8 +41,8 @@ export default function Observability() {
     setExpandedReview(reviewId);
     setTracesLoading(true);
     try {
-      const result = await getReviewResult(reviewId);
-      setTraces(result.traces ?? []);
+      const result = await unwrap(api.api.review({ id: reviewId }).result.get());
+      setTraces((result as { traces?: AgentTrace[] }).traces ?? []);
     } catch {
       setTraces([]);
     } finally {

@@ -1,6 +1,7 @@
 import { useEffect, useState, useRef } from "react";
 import { useParams, useNavigate } from "react-router-dom";
-import { getReviewStatus, cancelReview, getMastraSpans } from "../api/client";
+import { api, unwrap } from "../api/eden";
+import { useCancelReview } from "../api/hooks";
 import { connectWebSocket } from "../api/websocket";
 import type { ReviewStatus as ReviewStatusType, WSEvent, MastraSpan } from "../api/types";
 import ProgressBar from "../components/ProgressBar";
@@ -38,7 +39,7 @@ export default function ReviewStatus() {
   const [activityLog, setActivityLog] = useState<ActivityEntry[]>([]);
   const [completedAgents, setCompletedAgents] = useState<CompletedAgent[]>([]);
   const [error, setError] = useState("");
-  const [cancelling, setCancelling] = useState(false);
+  const { trigger: triggerCancel, isMutating: cancelling } = useCancelReview();
   const [selectedTraceAgent, setSelectedTraceAgent] = useState<string | null>(null);
   const [traceSpans, setTraceSpans] = useState<MastraSpan[]>([]);
   const [traceLoading, setTraceLoading] = useState(false);
@@ -52,15 +53,14 @@ export default function ReviewStatus() {
   useEffect(() => {
     if (!id) return;
 
-    getReviewStatus(id)
+    unwrap(api.api.review({ id }).status.get())
       .then((data) => {
-        setStatus(data);
-        // If review already complete when page loads, navigate to results
-        if (data.phase === "complete") {
+        setStatus(data as ReviewStatusType);
+        if ((data as ReviewStatusType).phase === "complete") {
           navigate(`/review/${id}/results`);
         }
       })
-      .catch((err) => setError(err.message));
+      .catch((err: unknown) => setError(err instanceof Error ? err.message : String(err)));
 
     cleanupRef.current = connectWebSocket(
       id,
@@ -153,14 +153,11 @@ export default function ReviewStatus() {
 
   const handleCancel = async () => {
     if (!id || cancelling) return;
-    setCancelling(true);
     try {
-      await cancelReview(id);
+      await triggerCancel(id);
       setStatus((prev) => (prev ? { ...prev, phase: "cancelling" } : prev));
     } catch (err) {
       setError(err instanceof Error ? err.message : "Failed to cancel review");
-    } finally {
-      setCancelling(false);
     }
   };
 
@@ -194,8 +191,8 @@ export default function ReviewStatus() {
     setTraceSpans([]);
 
     try {
-      const result = await getMastraSpans(agent.mastraTraceId);
-      setTraceSpans(result.spans);
+      const result = await unwrap(api.api.traces({ traceId: agent.mastraTraceId }).spans.get());
+      setTraceSpans((result as { spans: MastraSpan[] }).spans);
     } catch (err) {
       console.error("Failed to load trace:", err);
     } finally {

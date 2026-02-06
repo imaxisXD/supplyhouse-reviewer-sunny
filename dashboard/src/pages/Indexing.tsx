@@ -1,7 +1,6 @@
 import { useState, useRef, useEffect } from "react";
-import { submitIndex, submitIncrementalIndex, cancelIndex } from "../api/client";
 import { connectIndexWebSocket } from "../api/websocket";
-import { useIndexJobs, useIndexFrameworks } from "../api/hooks";
+import { useIndexJobs, useIndexFrameworks, useSubmitIndex, useSubmitIncrementalIndex, useCancelIndex } from "../api/hooks";
 import type { IndexFramework } from "../api/types";
 import { advanceJourneyStep } from "../journey";
 import {
@@ -29,10 +28,11 @@ export default function Indexing() {
   const [frameworkMode, setFrameworkMode] = useState<"auto" | "manual">("auto");
   const [incremental, setIncremental] = useState(false);
   const [changedFiles, setChangedFiles] = useState("");
-  const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
-  const [cancelling, setCancelling] = useState(false);
   const [job, setJob] = useState<IndexJob | null>(null);
+  const { trigger: triggerIndex, isMutating: loading } = useSubmitIndex();
+  const { trigger: triggerIncremental } = useSubmitIncrementalIndex();
+  const { trigger: triggerCancel, isMutating: cancelling } = useCancelIndex();
   const { data: jobsData, mutate: mutateJobs } = useIndexJobs({ limit: 20 });
   const pastJobs = jobsData?.jobs ?? [];
   const { data: frameworksData } = useIndexFrameworks();
@@ -75,8 +75,6 @@ export default function Indexing() {
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     setError("");
-    setCancelling(false);
-    setLoading(true);
 
     try {
       const frameworkOverride = frameworkMode === "manual" ? framework || undefined : undefined;
@@ -87,9 +85,11 @@ export default function Indexing() {
         throw new Error("Provide at least one changed file for incremental indexing.");
       }
 
-      const { indexId } = await (incremental
-        ? submitIncrementalIndex({ repoUrl, token: fullToken, branch: branch || undefined, framework: frameworkOverride, changedFiles: files })
-        : submitIndex({ repoUrl, token: fullToken, branch: branch || undefined, framework: frameworkOverride }));
+      const res = incremental
+        ? await triggerIncremental({ repoUrl, token: fullToken, branch: branch || undefined, framework: frameworkOverride, changedFiles: files })
+        : await triggerIndex({ repoUrl, token: fullToken, branch: branch || undefined, framework: frameworkOverride });
+
+      const indexId = (res as { indexId: string }).indexId;
 
       setJob({
         id: indexId,
@@ -126,21 +126,16 @@ export default function Indexing() {
       });
     } catch (err) {
       setError(err instanceof Error ? err.message : "Failed to start indexing");
-    } finally {
-      setLoading(false);
     }
   };
 
   const handleCancel = async () => {
     if (!job || cancelling) return;
-    setCancelling(true);
     setError("");
     try {
-      await cancelIndex(job.id);
+      await triggerCancel(job.id);
     } catch (err) {
       setError(err instanceof Error ? err.message : "Failed to cancel indexing");
-    } finally {
-      setCancelling(false);
     }
   };
 

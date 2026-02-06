@@ -3,6 +3,12 @@ import type { App } from "@server/index";
 
 export const api = treaty<App>(window.location.origin);
 
+/** Unwrap an Eden response — throw on error, return data. */
+export function unwrap<T>(res: { data: T; error: unknown }): T {
+  if (res.error) throw new Error(extractErrorMessage(res.error));
+  return res.data as T;
+}
+
 export function extractErrorMessage(error: unknown): string {
   if (!error) return "Unknown error";
   if (typeof error === "string") return error;

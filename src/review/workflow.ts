@@ -488,6 +488,7 @@ export async function executeReview(job: ReviewJob, sessionLogger?: Logger): Pro
     const synthesis = await synthesizeFindings(
       reviewId, verifiedFindings, degradation,
       prDetails?.title, prDetails?.description, diffFilesMeta,
+      { repoId, repoPath },
     );
     const synthesisDurationMs = Date.now() - synthesisStart;
     log.info(

@@ -3,9 +3,8 @@ import { useParams, Link } from "react-router-dom";
 import ForceGraph3D from "react-force-graph-3d";
 import type { ForceGraphMethods } from "react-force-graph-3d";
 import * as THREE from "three";
-import { submitForceReindex, cancelIndex } from "../api/client";
 import { connectIndexWebSocket } from "../api/websocket";
-import { useRepoGraph, useRepoMeta } from "../api/hooks";
+import { useRepoGraph, useRepoMeta, useSubmitForceReindex, useCancelIndex } from "../api/hooks";
 import type { GraphNode, GraphLink, GraphNodeLabel, GraphEdgeType, GraphView } from "../api/types";
 import GraphLegend, {
   NODE_COLORS,
@@ -134,6 +133,8 @@ export default function RepoGraph() {
   } = useRepoGraph(decodedRepoId || undefined, graphView);
 
   const [reindexOpen, setReindexOpen] = useState(false);
+  const { trigger: triggerForceReindex } = useSubmitForceReindex();
+  const { trigger: triggerCancelIndex } = useCancelIndex();
 
   const {
     data: repoMeta,
@@ -715,11 +716,12 @@ export default function RepoGraph() {
         }
 
         const branchValue = reindexBranch.trim();
-        const { indexId } = await submitForceReindex({
+        const res = await triggerForceReindex({
           repoId: decodedRepoId,
           token: fullToken,
           branch: branchValue || undefined,
         });
+        const indexId = (res as { indexId: string }).indexId;
 
         setReindexJob({
           id: indexId,
@@ -770,7 +772,7 @@ export default function RepoGraph() {
     setReindexCancelling(true);
     setReindexError("");
     try {
-      await cancelIndex(reindexJob.id);
+      await triggerCancelIndex(reindexJob.id);
     } catch (err) {
       setReindexError(err instanceof Error ? err.message : "Failed to cancel re-index");
     } finally {

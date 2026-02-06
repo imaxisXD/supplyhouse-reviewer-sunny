@@ -9,7 +9,8 @@ import { synthesisAgent } from "../mastra/index.ts";
 import { openRouterBreaker } from "../services/breakers.ts";
 import { createLogger } from "../config/logger.ts";
 import { parseSynthesisOutput, type SynthesisOutput } from "./response-parsers.ts";
-import { extractUsageFromResult } from "./agent-runner.ts";
+import { extractUsageFromResult, extractToolUsageFromResult } from "./agent-runner.ts";
+import { runWithRepoContext } from "../tools/repo-context.ts";
 
 const log = createLogger("synthesis-phase");
 
@@ -22,6 +23,7 @@ export async function synthesizeFindings(
   prTitle?: string,
   prDescription?: string,
   diffFilesMeta?: { path: string; status: string; additions: number; deletions: number }[],
+  repoContext?: { repoId: string; repoPath: string },
 ): Promise<SynthesisOutput & { trace?: AgentTrace }> {
   if (findings.length === 0) return { findings: [], confidenceScore: 5 };
 
@@ -58,12 +60,20 @@ export async function synthesizeFindings(
 
     const prompt = promptParts.join("\n");
 
+    const generateFn = () => synthesisAgent.generate(prompt, { tracingOptions: { metadata: { reviewId } } });
     const result = await openRouterBreaker.execute(async () => {
-      const response = await synthesisAgent.generate(prompt, { tracingOptions: { metadata: { reviewId } } });
-      return response;
+      return repoContext
+        ? runWithRepoContext(repoContext, generateFn)
+        : generateFn();
     });
     const completedAt = new Date();
     const usage = extractUsageFromResult(result);
+    const toolUsage = extractToolUsageFromResult(result);
+
+    log.info(
+      { reviewId, agent: "synthesis", toolsUsed: toolUsage.totalCalls, byTool: toolUsage.byTool },
+      "Synthesis agent execution complete",
+    );
 
     const trace: AgentTrace = {
       agent: "synthesis",
@@ -73,6 +83,7 @@ export async function synthesizeFindings(
       ...usage,
       findingsCount: 0,
       status: "success",
+      toolUsage,
     };
 
     const text = typeof result.text === "string" ? result.text : "";

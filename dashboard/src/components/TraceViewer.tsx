@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { getReviewResult } from "../api/client";
+import { api, unwrap } from "../api/eden";
 import { useReviewsList } from "../api/hooks";
 import type { ReviewListItem, AgentTrace } from "../api/types";
 
@@ -31,8 +31,8 @@ export default function TraceViewer() {
     setTraceError("");
 
     try {
-      const result = await getReviewResult(id);
-      setTraces(result.traces ?? []);
+      const result = await unwrap(api.api.review({ id }).result.get());
+      setTraces((result as { traces?: AgentTrace[] }).traces ?? []);
     } catch (err) {
       setTraceError(err instanceof Error ? err.message : "Failed to load traces");
     } finally {

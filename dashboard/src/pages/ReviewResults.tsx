@@ -1,8 +1,7 @@
 import { useEffect, useState } from "react";
 import { useParams, useNavigate } from "react-router-dom";
-import { submitReview, validateToken } from "../api/client";
+import { useReviewResult, useValidateToken, useSubmitReview } from "../api/hooks";
 import type { TokenValidationResult } from "../api/types";
-import { useReviewResult } from "../api/hooks";
 import FindingsTable from "../components/FindingsTable";
 import { advanceJourneyStep } from "../journey";
 import {
@@ -55,54 +54,53 @@ export default function ReviewResults() {
   const { id } = useParams<{ id: string }>();
   const navigate = useNavigate();
   const { data: result, error: swrError, isLoading: loading } = useReviewResult(id ?? undefined);
+  const { trigger: triggerValidate, isMutating: validating } = useValidateToken();
+  const { trigger: triggerSubmit, isMutating: submitting } = useSubmitReview();
   const error = swrError?.message ?? "";
 
   // Re-review modal state
   const [reReviewOpen, setReReviewOpen] = useState(false);
   const [email, setEmail] = useState("");
   const [token, setToken] = useState("");
-  const [validating, setValidating] = useState(false);
   const [tokenValid, setTokenValid] = useState(false);
   const [validationResult, setValidationResult] = useState<TokenValidationResult | null>(null);
-  const [submitting, setSubmitting] = useState(false);
   const [reReviewError, setReReviewError] = useState("");
 
   const buildFullToken = () => `${email}:${token}`;
 
   const handleValidate = async () => {
     if (!result?.prUrl || !email || !token) return;
-    setValidating(true);
     setReReviewError("");
     setTokenValid(false);
     setValidationResult(null);
     try {
-      const res = await validateToken(result.prUrl, buildFullToken());
-      setValidationResult(res);
-      setTokenValid(res.valid);
-      if (!res.valid && res.error) {
-        setReReviewError(res.error);
+      const res = await triggerValidate({ prUrl: result.prUrl, token: buildFullToken() });
+      if (res) {
+        setValidationResult(res as TokenValidationResult);
+        setTokenValid((res as TokenValidationResult).valid);
+        if (!(res as TokenValidationResult).valid && (res as TokenValidationResult).error) {
+          setReReviewError((res as TokenValidationResult).error!);
+        }
       }
     } catch (err) {
       setReReviewError(err instanceof Error ? err.message : "Validation failed");
-    } finally {
-      setValidating(false);
     }
   };
 
   const handleReReview = async () => {
     if (!result?.prUrl || !tokenValid) return;
-    setSubmitting(true);
     setReReviewError("");
     try {
-      const { reviewId } = await submitReview({
+      const res = await triggerSubmit({
         prUrl: result.prUrl,
         token: buildFullToken(),
         options: result.options ?? {},
       });
-      navigate(`/review/${reviewId}`);
+      if (res) {
+        navigate(`/review/${(res as { reviewId: string }).reviewId}`);
+      }
     } catch (err) {
       setReReviewError(err instanceof Error ? err.message : "Failed to start re-review");
-      setSubmitting(false);
     }
   };
 
