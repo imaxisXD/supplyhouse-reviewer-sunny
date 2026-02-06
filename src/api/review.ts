@@ -7,6 +7,14 @@ import { reviewTokenKey, storeToken } from "../utils/token-store.ts";
 import { markCancelled, reviewCancelKey } from "../utils/cancellation.ts";
 import { bitbucketClient } from "../bitbucket/client.ts";
 import { bitbucketBreaker } from "../services/breakers.ts";
+import {
+  TokenValidationResultSchema,
+  ReviewIdResponseSchema,
+  ReviewStatusSchema,
+  ReviewResultSchema,
+  CancelResponseSchema,
+  ErrorResponse,
+} from "./schemas.ts";
 
 const log = createLogger("api:review");
 
@@ -130,6 +138,7 @@ export const reviewRoutes = new Elysia({ prefix: "/api/review" })
         prUrl: t.String({ minLength: 1 }),
         token: t.String({ minLength: 1 }),
       }),
+      response: TokenValidationResultSchema,
     }
   )
   .post(
@@ -216,6 +225,10 @@ export const reviewRoutes = new Elysia({ prefix: "/api/review" })
           })
         ),
       }),
+      response: {
+        201: ReviewIdResponseSchema,
+        400: ErrorResponse,
+      },
     }
   )
   .get("/:id/status", async ({ params, set }) => {
@@ -225,6 +238,11 @@ export const reviewRoutes = new Elysia({ prefix: "/api/review" })
       return { error: "Review not found" };
     }
     return JSON.parse(data);
+  }, {
+    response: {
+      200: ReviewStatusSchema,
+      404: ErrorResponse,
+    },
   })
   .get("/:id/result", async ({ params, set }) => {
     const data = await redis.get(`review:result:${params.id}`);
@@ -233,6 +251,11 @@ export const reviewRoutes = new Elysia({ prefix: "/api/review" })
       return { error: "Review result not found" };
     }
     return JSON.parse(data);
+  }, {
+    response: {
+      200: ReviewResultSchema,
+      404: ErrorResponse,
+    },
   })
   .delete("/:id", async ({ params, set }) => {
     const { id } = params;
@@ -319,4 +342,9 @@ export const reviewRoutes = new Elysia({ prefix: "/api/review" })
       set.status = 500;
       return { error: "Failed to cancel review" };
     }
+  }, {
+    response: {
+      200: CancelResponseSchema,
+      500: ErrorResponse,
+    },
   });

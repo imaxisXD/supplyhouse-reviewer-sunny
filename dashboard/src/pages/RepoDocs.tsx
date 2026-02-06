@@ -1,20 +1,18 @@
-import { useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import { Link, useParams } from "react-router-dom";
 import ReactMarkdown from "react-markdown";
+import { mutate } from "swr";
+import type { RepoDoc, RepoDocListItem } from "../api/types";
 import {
-  createRepoDoc,
-  deleteRepoDoc,
-  getRepoDoc,
-  getRepoDocs,
-  updateRepoDoc,
-  type RepoDoc,
-  type RepoDocListItem,
-} from "../api/client";
+  useRepoDocs,
+  useRepoDoc,
+  useCreateRepoDoc,
+  useUpdateRepoDoc,
+  useDeleteRepoDoc,
+} from "../api/hooks";
+import { panelClass, labelClass, inputClass } from "../utils/styles";
 
-const panelClass = "border border-ink-900 bg-white p-4";
-const labelClass = "text-[10px] font-semibold uppercase tracking-[0.3em] text-ink-600";
-const inputClass =
-  "w-full border border-ink-900 bg-white px-3 py-2 text-sm text-ink-900 placeholder:text-ink-500 focus:outline-none focus:border-brand-500";
+// RepoDocs uses text-[10px] buttons (slightly smaller than shared text-[11px])
 const buttonPrimaryClass =
   "inline-flex items-center justify-center gap-2 border border-brand-500 bg-brand-500 px-4 py-2 text-[10px] font-semibold uppercase tracking-[0.3em] text-white transition hover:bg-brand-400 disabled:cursor-not-allowed disabled:opacity-60";
 const buttonSecondaryClass =
@@ -24,68 +22,78 @@ export default function RepoDocs() {
   const { repoId } = useParams<{ repoId: string }>();
   const decodedRepoId = repoId ? decodeURIComponent(repoId) : "";
 
-  const [docs, setDocs] = useState<RepoDocListItem[]>([]);
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [title, setTitle] = useState("");
   const [body, setBody] = useState("");
-  const [loading, setLoading] = useState(true);
-  const [docLoading, setDocLoading] = useState(false);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState("");
   const [notice, setNotice] = useState("");
+
+  // SWR hooks for data fetching
+  const {
+    data: docsData,
+    error: docsError,
+    isLoading: loading,
+  } = useRepoDocs(decodedRepoId || undefined);
+
+  const {
+    data: docDetail,
+    error: docDetailError,
+    isLoading: docLoading,
+  } = useRepoDoc(selectedId ?? undefined);
+
+  // Mutation hooks
+  const { trigger: triggerCreate } = useCreateRepoDoc();
+  const { trigger: triggerUpdate } = useUpdateRepoDoc(selectedId ?? "");
+  const { trigger: triggerDelete } = useDeleteRepoDoc();
+
+  const docs: RepoDocListItem[] = docsData?.docs ?? [];
+  const docsListKey = decodedRepoId ? `/api/docs/repos/${decodedRepoId}` : null;
 
   const selectedDoc = useMemo(
     () => docs.find((doc) => doc.id === selectedId) ?? null,
     [docs, selectedId],
   );
 
-  const loadDocs = async () => {
-    if (!decodedRepoId) return;
-    setLoading(true);
-    setError("");
-    try {
-      const data = await getRepoDocs(decodedRepoId);
-      setDocs(data.docs ?? []);
-    } catch (err) {
-      setError(err instanceof Error ? err.message : "Failed to load docs");
-    } finally {
-      setLoading(false);
+  // Sync form fields when a doc is fetched
+  useEffect(() => {
+    if (docDetail) {
+      setTitle(docDetail.title);
+      setBody(docDetail.body);
     }
-  };
+  }, [docDetail]);
 
-  const loadDoc = async (docId: string) => {
-    setDocLoading(true);
-    setError("");
-    setNotice("");
-    try {
-      const doc = await getRepoDoc(docId);
-      setSelectedId(doc.id);
-      setTitle(doc.title);
-      setBody(doc.body);
-    } catch (err) {
-      setError(err instanceof Error ? err.message : "Failed to load doc");
-    } finally {
-      setDocLoading(false);
+  // Propagate fetch errors into local error state
+  useEffect(() => {
+    if (docsError) {
+      setError(docsError instanceof Error ? docsError.message : "Failed to load docs");
     }
-  };
+  }, [docsError]);
 
   useEffect(() => {
-    setDocs([]);
+    if (docDetailError) {
+      setError(docDetailError instanceof Error ? docDetailError.message : "Failed to load doc");
+    }
+  }, [docDetailError]);
+
+  // Reset form when repo changes
+  useEffect(() => {
     setSelectedId(null);
     setTitle("");
     setBody("");
-    void loadDocs();
+    setError("");
+    setNotice("");
   }, [decodedRepoId]);
 
-  const handleNew = () => {
+  const handleNew = useCallback(() => {
     setSelectedId(null);
     setTitle("");
     setBody("");
     setNotice("");
     setError("");
-  };
+  }, []);
 
-  const handleSave = async () => {
+  const handleSave = useCallback(async () => {
     if (!decodedRepoId) return;
     const trimmedTitle = title.trim();
     if (!trimmedTitle) {
@@ -103,12 +111,12 @@ export default function RepoDocs() {
     try {
       let saved: RepoDoc;
       if (selectedId) {
-        saved = await updateRepoDoc(selectedId, { title: trimmedTitle, body });
+        saved = await triggerUpdate({ title: trimmedTitle, body }) as RepoDoc;
       } else {
-        saved = await createRepoDoc({ repoId: decodedRepoId, title: trimmedTitle, body });
+        saved = await triggerCreate({ repoId: decodedRepoId, title: trimmedTitle, body }) as RepoDoc;
       }
 
-      await loadDocs();
+      await mutate(docsListKey);
       setSelectedId(saved.id);
       setTitle(saved.title);
       setBody(saved.body);
@@ -118,9 +126,9 @@ export default function RepoDocs() {
     } finally {
       setSaving(false);
     }
-  };
+  }, [decodedRepoId, title, body, selectedId, triggerUpdate, triggerCreate, docsListKey]);
 
-  const handleDelete = async () => {
+  const handleDelete = useCallback(async () => {
     if (!selectedId) return;
     const ok = window.confirm("Delete this document? This cannot be undone.");
     if (!ok) return;
@@ -129,18 +137,24 @@ export default function RepoDocs() {
     setError("");
     setNotice("");
     try {
-      await deleteRepoDoc(selectedId);
+      await triggerDelete(selectedId);
       setSelectedId(null);
       setTitle("");
       setBody("");
-      await loadDocs();
+      await mutate(docsListKey);
       setNotice("Document deleted");
     } catch (err) {
       setError(err instanceof Error ? err.message : "Failed to delete doc");
     } finally {
       setSaving(false);
     }
-  };
+  }, [selectedId, triggerDelete, docsListKey]);
+
+  const handleSelectDoc = useCallback((docId: string) => {
+    setNotice("");
+    setError("");
+    setSelectedId(docId);
+  }, []);
 
   return (
     <div className="space-y-6">
@@ -163,7 +177,7 @@ export default function RepoDocs() {
             New doc
           </button>
           <button type="button" onClick={handleSave} className={buttonPrimaryClass} disabled={saving}>
-            {saving ? "Saving…" : "Save"}
+            {saving ? "Saving\u2026" : "Save"}
           </button>
         </div>
       </div>
@@ -175,7 +189,7 @@ export default function RepoDocs() {
             <span className="text-[10px] uppercase tracking-[0.3em] text-ink-500">{docs.length}</span>
           </div>
 
-          {loading && <div className="text-xs text-ink-500">Loading docs…</div>}
+          {loading && <div className="text-xs text-ink-500">Loading docs\u2026</div>}
           {!loading && docs.length === 0 && (
             <div className="border border-dashed border-ink-900 bg-warm-50 p-3 text-xs text-ink-600">
               No docs yet. Create one to start guiding reviews.
@@ -189,7 +203,7 @@ export default function RepoDocs() {
                 <button
                   key={doc.id}
                   type="button"
-                  onClick={() => void loadDoc(doc.id)}
+                  onClick={() => handleSelectDoc(doc.id)}
                   className={`w-full text-left border px-3 py-2 transition ${
                     isSelected
                       ? "border-ink-900 bg-warm-100 text-ink-950"
@@ -230,7 +244,7 @@ export default function RepoDocs() {
                   value={title}
                   onChange={(e) => setTitle(e.target.value)}
                   className={`${inputClass} mt-2`}
-                  placeholder="Architecture rules, API conventions, security rules…"
+                  placeholder="Architecture rules, API conventions, security rules\u2026"
                 />
               </div>
               <div>
@@ -244,7 +258,7 @@ export default function RepoDocs() {
                 />
               </div>
 
-              {docLoading && <div className="text-xs text-ink-500">Loading doc…</div>}
+              {docLoading && <div className="text-xs text-ink-500">Loading doc\u2026</div>}
               {error && (
                 <div className="border border-rose-400/50 bg-rose-50 p-3 text-xs text-rose-700">
                   {error}

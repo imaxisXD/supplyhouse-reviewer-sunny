@@ -39,14 +39,14 @@ export interface Finding {
   verificationNotes?: string;
   /** Investigation trail documenting how the agent verified this finding */
   investigation?: InvestigationTrail;
+  /** Finding couldn't be mapped to a specific line - shown in summary only */
+  unlocatable?: boolean;
 }
 
 /** Summary of tool calls made during an agent execution */
 export interface ToolUsageSummary {
   totalCalls: number;
   byTool: Record<string, number>;
-  /** Finding couldn't be mapped to a specific line - shown in summary only */
-  unlocatable?: boolean;
 }
 
 export interface AgentTrace {

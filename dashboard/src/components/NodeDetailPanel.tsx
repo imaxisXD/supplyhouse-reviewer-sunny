@@ -1,7 +1,6 @@
 import { useMemo } from "react";
-import type { GraphNode, GraphLink, GraphEdgeType } from "../api/client";
+import type { GraphNode, GraphLink, GraphEdgeType, GraphNodeLabel } from "../api/types";
 import { NODE_COLORS, EDGE_COLORS } from "./GraphLegend";
-import type { GraphNodeLabel } from "../api/client";
 
 type FGNode = GraphNode & { x?: number; y?: number; z?: number; __connections?: number };
 

@@ -4,12 +4,13 @@ import { memgraphHealthCheck } from "../db/memgraph.ts";
 import { redisHealthCheck } from "../db/redis.ts";
 import { getBreakerStates } from "../services/breakers.ts";
 import { getDegradationMode } from "../services/degradation.ts";
+import { HealthSimpleSchema, HealthServicesSchema } from "./schemas.ts";
 
 export const healthRoutes = new Elysia({ prefix: "/health" })
   .get("/", () => ({
     status: "ok",
     timestamp: new Date().toISOString(),
-  }))
+  }), { response: HealthSimpleSchema })
   .get("/services", async () => {
     const [qdrant, memgraph, redis] = await Promise.allSettled([
       qdrantHealthCheck(),
@@ -38,4 +39,4 @@ export const healthRoutes = new Elysia({ prefix: "/health" })
       degradation,
       timestamp: new Date().toISOString(),
     };
-  });
+  }, { response: HealthServicesSchema });

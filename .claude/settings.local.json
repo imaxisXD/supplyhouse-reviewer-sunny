@@ -41,8 +41,19 @@
       "Bash(npx vite build)",
       "Bash(git -C \"/Users/abhishekmac/Desktop/Hobby Projects/supplyhouse-reviewer-sunny/dashboard\" log --oneline -10)",
       "WebFetch(domain:www.deepgraph.co)",
-      "WebFetch(domain:www.anthropic.com)"
-      "Bash(find src -name \"*.ts\" -exec grep -l \"summaryComment\" {} ;)"
+      "WebFetch(domain:www.anthropic.com)",
+      "Bash(while read f)",
+      "Bash(done)",
+      "WebFetch(domain:nucleoapp.com)",
+      "WebFetch(domain:swr.vercel.app)",
+      "Bash(ls:*)",
+      "Bash(git status:*)",
+      "Bash(git add:*)",
+      "Bash(git commit:*)",
+      "Bash(git push:*)",
+      "Bash(gh pr create:*)",
+      "Bash(git merge:*)",
+      "Bash(git stash push:*)"
     ]
   }
 }

@@ -1,6 +1,4 @@
-import { useEffect, useState } from "react";
-import { getMetrics } from "../api/client";
-import type { Metrics } from "../api/client";
+import { useMetrics } from "../api/hooks";
 
 const SEVERITY_COLORS: Record<string, string> = {
   critical: "bg-rose-500",
@@ -31,25 +29,16 @@ const BREAKER_TEXT_COLORS: Record<string, string> = {
 };
 
 export default function MetricsPanel() {
-  const [metrics, setMetrics] = useState<Metrics | null>(null);
-  const [loading, setLoading] = useState(true);
-  const [error, setError] = useState("");
+  const { data: metrics, isLoading, error } = useMetrics();
 
-  useEffect(() => {
-    getMetrics()
-      .then(setMetrics)
-      .catch((err) => setError(err.message))
-      .finally(() => setLoading(false));
-  }, []);
-
-  if (loading) {
+  if (isLoading) {
     return <div className="text-center py-12 text-ink-600">Loading metrics...</div>;
   }
 
   if (error) {
     return (
       <div className="p-4 bg-rose-50 border border-rose-300/70 text-rose-700 text-sm">
-        {error}
+        {error.message}
       </div>
     );
   }

@@ -1,14 +1,20 @@
-import { Elysia } from "elysia";
+import { Elysia, t } from "elysia";
 import { redis } from "../db/redis.ts";
 import { getBreakerStates } from "../services/breakers.ts";
 import { createLogger } from "../config/logger.ts";
 import { fetchOpenRouterCostUsd } from "../services/openrouter-cost.ts";
+import {
+  ReviewsListResponseSchema,
+  MetricsSchema,
+  RefreshCostsResponseSchema,
+  ErrorResponse,
+} from "./schemas.ts";
 
 const log = createLogger("api:reviews-list");
 
 export const reviewsListRoutes = new Elysia({ prefix: "/api" })
   .get("/reviews", async ({ query }) => {
-    const limit = Math.min(parseInt((query as Record<string, string>).limit ?? "50", 10), 200);
+    const limit = Math.min(parseInt(query.limit ?? "50", 10), 200);
 
     // UUID pattern to filter only review:<uuid> keys (not review:result:*, review:cancel:*, etc.)
     const UUID_RE = /^review:([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})$/;
@@ -81,6 +87,11 @@ export const reviewsListRoutes = new Elysia({ prefix: "/api" })
       log.error({ error: error instanceof Error ? error.message : String(error) }, "Failed to list reviews");
       return { reviews: [], total: 0 };
     }
+  }, {
+    query: t.Object({
+      limit: t.Optional(t.String()),
+    }),
+    response: ReviewsListResponseSchema,
   })
   .get("/metrics", async () => {
     const MAX_METRICS_KEYS = 1000;
@@ -144,7 +155,7 @@ export const reviewsListRoutes = new Elysia({ prefix: "/api" })
         circuitBreakers: {},
       };
     }
-  })
+  }, { response: MetricsSchema })
   .post("/metrics/refresh-costs", async ({ set }) => {
     const MAX_KEYS = 1000;
     try {
@@ -266,4 +277,9 @@ export const reviewsListRoutes = new Elysia({ prefix: "/api" })
       set.status = 500;
       return { error: "Failed to refresh costs" };
     }
+  }, {
+    response: {
+      200: RefreshCostsResponseSchema,
+      500: ErrorResponse,
+    },
   });

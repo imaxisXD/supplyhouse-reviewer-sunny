@@ -1,20 +1,34 @@
 import { NavLink } from "react-router-dom";
+import {
+  IconPlusOutline24,
+  IconPageOutline24,
+  IconFolderOutline24,
+  IconBulletListOutline24,
+  IconChartBarAxisXOutline24,
+  IconHouse6Outline24,
+} from "nucleo-core-essential-outline-24";
+import type { ComponentType } from "react";
 
+interface NavItem {
+  to: string;
+  label: string;
+  icon: ComponentType<{ size?: number | string; className?: string }>;
+}
 
-const navItems = [
+const navItems: { section: string; items: NavItem[] }[] = [
   {
     section: "Main",
     items: [
-      { to: "/", label: "Submit Review", icon: "M12 4v16m8-8H4" },
-      { to: "/reviews", label: "Reviews", icon: "M9 5H7a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2V7a2 2 0 00-2-2h-2M9 5a2 2 0 002 2h2a2 2 0 002-2M9 5a2 2 0 012-2h2a2 2 0 012 2" },
-      { to: "/repos", label: "Repositories", icon: "M3 7v10a2 2 0 002 2h14a2 2 0 002-2V9a2 2 0 00-2-2h-6l-2-2H5a2 2 0 00-2 2z" },
+      { to: "/", label: "Submit Review", icon: IconPlusOutline24 },
+      { to: "/reviews", label: "Reviews", icon: IconPageOutline24 },
+      { to: "/repos", label: "Repositories", icon: IconFolderOutline24 },
     ]
   },
   {
     section: "Analytics",
     items: [
-      { to: "/indexing", label: "Indexing", icon: "M4 6h16M4 10h16M4 14h16M4 18h16" },
-      { to: "/observability", label: "Observability", icon: "M9 19v-6a2 2 0 00-2-2H5a2 2 0 00-2 2v6a2 2 0 002 2h2a2 2 0 002-2zm0 0V9a2 2 0 012-2h2a2 2 0 012 2v10m-6 0a2 2 0 002 2h2a2 2 0 002-2m0 0V5a2 2 0 012-2h2a2 2 0 012 2v14a2 2 0 01-2 2h-2a2 2 0 01-2-2z" },
+      { to: "/indexing", label: "Indexing", icon: IconBulletListOutline24 },
+      { to: "/observability", label: "Observability", icon: IconChartBarAxisXOutline24 },
     ]
   }
 ];
@@ -26,10 +40,7 @@ export function Sidebar() {
       <div className="px-5 py-5 border-b border-ink-900">
         <div className="mt-4 flex items-center gap-3 text-brand-600">
           <div className="flex h-9 w-9 items-center justify-center border border-brand-500/50 bg-brand-500/10">
-            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-              <path d="M3 9l9-7 9 7v11a2 2 0 01-2 2H5a2 2 0 01-2-2z" />
-              <polyline points="9 22 9 12 15 12 15 22" />
-            </svg>
+            <IconHouse6Outline24 size={18} />
           </div>
           <div>
             <div className="text-sm font-semibold text-ink-950">Supply House</div>
@@ -57,19 +68,7 @@ export function Sidebar() {
                     }`
                   }
                 >
-                  <svg
-                    width="16"
-                    height="16"
-                    viewBox="0 0 24 24"
-                    fill="none"
-                    stroke="currentColor"
-                    strokeWidth="2"
-                    strokeLinecap="round"
-                    strokeLinejoin="round"
-                    aria-hidden="true"
-                  >
-                    <path d={item.icon} />
-                  </svg>
+                  <item.icon size={16} />
                   {item.label}
                 </NavLink>
               ))}
@@ -83,7 +82,7 @@ export function Sidebar() {
       </div>
       </div>
 
-      
+
     </aside>
   );
 }

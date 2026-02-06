@@ -1,5 +1,5 @@
 import { useState } from "react";
-import type { Finding } from "../api/client";
+import type { Finding } from "../api/types";
 
 const SEVERITY_COLORS: Record<string, string> = {
   critical: "bg-rose-50 text-rose-700 border-rose-400/50",

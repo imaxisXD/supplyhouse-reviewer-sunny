@@ -1,6 +1,11 @@
-import { Elysia } from "elysia";
+import { Elysia, t } from "elysia";
 import { createLogger } from "../config/logger.ts";
 import { runCypher } from "../db/memgraph.ts";
+import {
+  IndexedReposResponseSchema,
+  GraphDataSchema,
+  ErrorResponse,
+} from "./schemas.ts";
 
 const log = createLogger("api:graph");
 
@@ -44,15 +49,20 @@ export const graphRoutes = new Elysia({ prefix: "/api/graph" })
       set.status = 500;
       return { error: "Failed to list indexed repos" };
     }
+  }, {
+    response: {
+      200: IndexedReposResponseSchema,
+      500: ErrorResponse,
+    },
   })
   .get("/:repoId", async ({ params, query, set }) => {
-    const { repoId } = params;
+    const repoId = decodeURIComponent(params.repoId);
     const view = typeof query?.view === "string" && query.view === "full" ? "full" : "overview";
     const defaultNodeTypes = view === "full" ? [...NODE_LABELS] : ["File"];
     const defaultEdgeTypes =
       view === "full" ? [...EDGE_TYPES] : ["CALLS", "IMPORTS", "EXTENDS", "IMPLEMENTS"];
-    const nodeTypes = parseCsvList(query?.nodeTypes, NODE_LABELS, defaultNodeTypes);
-    const edgeTypes = parseCsvList(query?.edgeTypes, EDGE_TYPES, defaultEdgeTypes);
+    const nodeTypes = parseCsvList(query?.nodeTypes as unknown, NODE_LABELS, defaultNodeTypes);
+    const edgeTypes = parseCsvList(query?.edgeTypes as unknown, EDGE_TYPES, defaultEdgeTypes);
 
     try {
       if (view === "overview") {
@@ -66,7 +76,7 @@ export const graphRoutes = new Elysia({ prefix: "/api/graph" })
           const props = r.get("f").properties;
           const labels: string[] = r.get("labels");
           const nodeId: number = r.get("nodeId");
-          const label = labels.find((l) => l === "File") ?? labels[0];
+          const label = labels.find((l) => l === "File") ?? labels[0] ?? "File";
 
           return {
             id: String(nodeId),
@@ -191,7 +201,7 @@ export const graphRoutes = new Elysia({ prefix: "/api/graph" })
         const props = r.get("n").properties;
         const labels: string[] = r.get("labels");
         const nodeId: number = r.get("nodeId");
-        const label = labels.find((l) => l === "File" || l === "Function" || l === "Class") ?? labels[0];
+        const label = labels.find((l) => l === "File" || l === "Function" || l === "Class") ?? labels[0] ?? "File";
 
         return {
           id: String(nodeId),
@@ -251,4 +261,14 @@ export const graphRoutes = new Elysia({ prefix: "/api/graph" })
       set.status = 500;
       return { error: "Failed to fetch graph data" };
     }
+  }, {
+    query: t.Object({
+      view: t.Optional(t.String()),
+      nodeTypes: t.Optional(t.String()),
+      edgeTypes: t.Optional(t.String()),
+    }),
+    response: {
+      200: GraphDataSchema,
+      500: ErrorResponse,
+    },
   });

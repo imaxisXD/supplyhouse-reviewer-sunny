@@ -1,17 +1,15 @@
 import { useEffect, useState } from "react";
 import { useParams, useNavigate } from "react-router-dom";
-import { getReviewResult, submitReview, validateToken } from "../api/client";
-import type { ReviewResult, TokenValidationResult } from "../api/client";
+import { useReviewResult, useValidateToken, useSubmitReview } from "../api/hooks";
+import type { TokenValidationResult } from "../api/types";
 import FindingsTable from "../components/FindingsTable";
 import { advanceJourneyStep } from "../journey";
+import {
+  panelClass, panelTitleClass, statCardClass, statLabelClass, statValueClass, tableHeaderClass,
+} from "../utils/styles";
+import { IconXmarkOutline24 } from "nucleo-core-essential-outline-24";
 
-const panelClass =
-  "border border-ink-900 bg-white p-4";
-const panelTitleClass = "text-[10px] uppercase tracking-[0.35em] text-ink-600";
-const statCardClass = "border border-ink-900 bg-white p-4";
-const statLabelClass = "text-[10px] uppercase tracking-[0.3em] text-ink-600";
-const statValueClass = "mt-2 text-xl font-semibold text-ink-950";
-const tableHeaderClass = "px-4 py-3 text-[10px] uppercase tracking-[0.3em] text-ink-600";
+// ReviewResults uses slightly different table row/cell styles
 const tableRowClass = "border-b border-ink-900 hover:bg-warm-100/60 transition-colors";
 const tableCellClass = "px-4 py-2.5 text-sm text-ink-700";
 const ghostButtonClass =
@@ -55,55 +53,54 @@ const STATUS_TEXT_COLORS: Record<string, string> = {
 export default function ReviewResults() {
   const { id } = useParams<{ id: string }>();
   const navigate = useNavigate();
-  const [result, setResult] = useState<ReviewResult | null>(null);
-  const [error, setError] = useState("");
+  const { data: result, error: swrError, isLoading: loading } = useReviewResult(id ?? undefined);
+  const { trigger: triggerValidate, isMutating: validating } = useValidateToken();
+  const { trigger: triggerSubmit, isMutating: submitting } = useSubmitReview();
+  const error = swrError?.message ?? "";
 
   // Re-review modal state
   const [reReviewOpen, setReReviewOpen] = useState(false);
   const [email, setEmail] = useState("");
   const [token, setToken] = useState("");
-  const [validating, setValidating] = useState(false);
   const [tokenValid, setTokenValid] = useState(false);
   const [validationResult, setValidationResult] = useState<TokenValidationResult | null>(null);
-  const [submitting, setSubmitting] = useState(false);
   const [reReviewError, setReReviewError] = useState("");
 
   const buildFullToken = () => `${email}:${token}`;
 
   const handleValidate = async () => {
     if (!result?.prUrl || !email || !token) return;
-    setValidating(true);
     setReReviewError("");
     setTokenValid(false);
     setValidationResult(null);
     try {
-      const res = await validateToken(result.prUrl, buildFullToken());
-      setValidationResult(res);
-      setTokenValid(res.valid);
-      if (!res.valid && res.error) {
-        setReReviewError(res.error);
+      const res = await triggerValidate({ prUrl: result.prUrl, token: buildFullToken() });
+      if (res) {
+        setValidationResult(res as TokenValidationResult);
+        setTokenValid((res as TokenValidationResult).valid);
+        if (!(res as TokenValidationResult).valid && (res as TokenValidationResult).error) {
+          setReReviewError((res as TokenValidationResult).error!);
+        }
       }
     } catch (err) {
       setReReviewError(err instanceof Error ? err.message : "Validation failed");
-    } finally {
-      setValidating(false);
     }
   };
 
   const handleReReview = async () => {
     if (!result?.prUrl || !tokenValid) return;
-    setSubmitting(true);
     setReReviewError("");
     try {
-      const { reviewId } = await submitReview({
+      const res = await triggerSubmit({
         prUrl: result.prUrl,
         token: buildFullToken(),
         options: result.options ?? {},
       });
-      navigate(`/review/${reviewId}`);
+      if (res) {
+        navigate(`/review/${(res as { reviewId: string }).reviewId}`);
+      }
     } catch (err) {
       setReReviewError(err instanceof Error ? err.message : "Failed to start re-review");
-      setSubmitting(false);
     }
   };
 
@@ -119,9 +116,6 @@ export default function ReviewResults() {
   useEffect(() => {
     if (!id) return;
     void advanceJourneyStep("results");
-    getReviewResult(id)
-      .then(setResult)
-      .catch((err) => setError(err.message));
   }, [id]);
 
   const handleExportJSON = () => {
@@ -297,9 +291,9 @@ export default function ReviewResults() {
               <span className="text-right">Tokens</span>
               <span className="text-right">Cost</span>
             </div>
-            {result.traces.map((trace) => (
+            {result.traces.map((trace, idx) => (
               <div
-                key={trace.agent}
+                key={`${trace.agent}-${idx}`}
                 className="grid grid-cols-[1fr_80px_80px_80px_80px] gap-2 px-4 py-2.5 border-b border-ink-900 text-sm hover:bg-warm-100/70 transition-colors"
               >
                 <span className="text-ink-900 font-medium">{trace.agent}</span>
@@ -329,11 +323,11 @@ export default function ReviewResults() {
           <div>
             <h3 className="text-sm font-medium text-ink-700 mb-3">Relative Duration</h3>
             <div className="space-y-2">
-              {result.traces.map((trace) => {
+              {result.traces.map((trace, idx) => {
                 const widthPercent =
                   maxTraceDuration > 0 ? (trace.durationMs / maxTraceDuration) * 100 : 0;
                 return (
-                  <div key={`bar-${trace.agent}`} className="flex items-center gap-3">
+                  <div key={`bar-${trace.agent}-${idx}`} className="flex items-center gap-3">
                     <span className="text-xs text-ink-600 w-32 shrink-0 text-right truncate">
                       {trace.agent}
                     </span>
@@ -414,9 +408,7 @@ export default function ReviewResults() {
               onClick={closeReReviewModal}
               className="absolute top-4 right-4 text-ink-500 hover:text-ink-700"
             >
-              <svg className="h-5 w-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
-              </svg>
+              <IconXmarkOutline24 size={20} />
             </button>
 
             <h3 className="text-lg font-semibold text-ink-950 mb-4">Re-review PR</h3>
