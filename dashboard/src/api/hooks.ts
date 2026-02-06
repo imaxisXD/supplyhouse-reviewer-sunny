@@ -292,7 +292,7 @@ export function useRepoGraph(
   return useSWR(
     repoId ? `/api/graph/${repoId}?view=${view}` : null,
     async () =>
-      unwrap(await api.api.graph({ repoId: repoId! }).get({ query: { view } })),
+      unwrap(await api.api.graph({ repoId: encodeURIComponent(repoId!) }).get({ query: { view } })),
     config,
   );
 }

@@ -3,10 +3,16 @@ import type { App } from "@server/index";
 
 export const api = treaty<App>(window.location.origin);
 
-/** Unwrap an Eden response — throw on error, return data. */
-export function unwrap<T>(res: { data: T; error: unknown }): T {
-  if (res.error) throw new Error(extractErrorMessage(res.error));
-  return res.data as T;
+/** Unwrap an Eden response — throw on error, return data.
+ *  Accepts both a resolved value and a Promise so callers can write
+ *  either `unwrap(await call())` or `await unwrap(call())`.
+ */
+export async function unwrap<T>(
+  res: Promise<{ data: T; error: unknown }> | { data: T; error: unknown },
+): Promise<T> {
+  const resolved = await res;
+  if (resolved.error) throw new Error(extractErrorMessage(resolved.error));
+  return resolved.data as T;
 }
 
 export function extractErrorMessage(error: unknown): string {

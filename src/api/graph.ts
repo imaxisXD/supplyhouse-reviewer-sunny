@@ -56,7 +56,7 @@ export const graphRoutes = new Elysia({ prefix: "/api/graph" })
     },
   })
   .get("/:repoId", async ({ params, query, set }) => {
-    const { repoId } = params;
+    const repoId = decodeURIComponent(params.repoId);
     const view = typeof query?.view === "string" && query.view === "full" ? "full" : "overview";
     const defaultNodeTypes = view === "full" ? [...NODE_LABELS] : ["File"];
     const defaultEdgeTypes =
