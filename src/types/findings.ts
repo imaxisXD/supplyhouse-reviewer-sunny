@@ -25,10 +25,22 @@ export interface Finding {
     line: number;
     usage: string;
   }[];
+  // Investigation trail from tool-using agents
+  investigation?: {
+    toolsUsed: string[];
+    filesChecked: string[];
+    patternsSearched: string[];
+    conclusion: string;
+  };
   // Verification status - set by verification agent
   disproven?: boolean;
   disprovenReason?: string;
   verificationNotes?: string;
+}
+
+export interface ToolUsageSummary {
+  totalCalls: number;
+  byTool: Record<string, number>;
 }
 
 export interface AgentTrace {
@@ -42,6 +54,10 @@ export interface AgentTrace {
   findingsCount: number;
   status: "success" | "failed" | "skipped";
   error?: string;
+  /** OpenRouter generation ID for cost verification */
+  generationId?: string;
+  /** Tool usage statistics from agent execution */
+  toolUsage?: ToolUsageSummary;
   /** Reference to Mastra's native trace for detailed span analysis */
   mastraTraceId?: string;
 }

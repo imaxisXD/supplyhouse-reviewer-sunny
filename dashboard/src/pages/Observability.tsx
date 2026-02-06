@@ -1,44 +1,38 @@
 import { Fragment, useEffect, useState } from "react";
 import { Link } from "react-router-dom";
-import { getMetrics, getReviewsList, getHealth, getReviewResult } from "../api/client";
-import type { Metrics, ReviewListItem, AgentTrace } from "../api/client";
+import { mutate } from "swr";
+import { getReviewResult } from "../api/client";
+import { useMetrics, useReviewsList, useHealth, useRefreshCosts } from "../api/hooks";
+import type { AgentTrace } from "../api/types";
 import { advanceJourneyStep } from "../journey";
 import MastraTraceViewer from "../components/MastraTraceViewer";
+import {
+  panelClass, panelTitleClass, statCardClass, statLabelClass, statValueClass,
+  tableHeaderClass, tableRowClass, tableCellClass,
+} from "../utils/styles";
+import { IconChevronRightOutline24 } from "nucleo-core-essential-outline-24";
 
 type Tab = "overview" | "traces";
 
-const panelClass =
-  "border border-ink-900 bg-white p-4";
-const panelTitleClass = "text-[10px] uppercase tracking-[0.35em] text-ink-600";
-const statCardClass = "border border-ink-900 bg-white p-4";
-const statLabelClass = "text-[10px] uppercase tracking-[0.3em] text-ink-600";
-const statValueClass = "mt-2 text-xl font-semibold text-ink-950";
-const tableHeaderClass = "px-4 py-3 text-[10px] uppercase tracking-[0.3em] text-ink-600";
-const tableRowClass = "border-t border-ink-900 hover:bg-warm-100/60 transition";
-const tableCellClass = "px-4 py-3 text-ink-700";
-
 export default function Observability() {
   const [activeTab, setActiveTab] = useState<Tab>("overview");
-  const [metrics, setMetrics] = useState<Metrics | null>(null);
-  const [reviews, setReviews] = useState<ReviewListItem[]>([]);
-  const [health, setHealth] = useState<Record<string, unknown> | null>(null);
-  const [error, setError] = useState("");
   const [expandedReview, setExpandedReview] = useState<string | null>(null);
   const [traces, setTraces] = useState<AgentTrace[]>([]);
   const [tracesLoading, setTracesLoading] = useState(false);
 
+  const { data: metrics, error: metricsError } = useMetrics();
+  const { data: reviewsData, error: reviewsError } = useReviewsList(20);
+  const { data: health, error: healthError } = useHealth();
+  const { trigger: triggerRefreshCosts, isMutating: refreshing } = useRefreshCosts();
+
+  const reviews = reviewsData?.reviews ?? [];
+  const error = metricsError?.message ?? reviewsError?.message ?? healthError?.message ?? "";
+
   useEffect(() => {
     void advanceJourneyStep("explore");
-    Promise.all([getMetrics(), getReviewsList(20), getHealth()])
-      .then(([metricsRes, reviewsRes, healthRes]) => {
-        setMetrics(metricsRes);
-        setReviews(reviewsRes.reviews ?? []);
-        setHealth(healthRes);
-      })
-      .catch((err) => setError(err instanceof Error ? err.message : "Failed to load metrics"));
   }, []);
 
-  const handleToggleTraces = async (reviewId: string) => {
+  async function handleToggleTraces(reviewId: string): Promise<void> {
     if (expandedReview === reviewId) {
       setExpandedReview(null);
       setTraces([]);
@@ -54,7 +48,16 @@ export default function Observability() {
     } finally {
       setTracesLoading(false);
     }
-  };
+  }
+
+  async function handleRefreshCosts(): Promise<void> {
+    try {
+      await triggerRefreshCosts();
+      await mutate("/api/metrics");
+    } catch {
+      // useRefreshCosts surfaces errors via its own state; nothing extra needed
+    }
+  }
 
   if (error) {
     return (
@@ -213,7 +216,7 @@ export default function Observability() {
                     >
                       <td className={`${tableCellClass} flex items-center gap-2`}>
                         <span className={`transition-transform ${expandedReview === review.id ? "rotate-90" : ""}`}>
-                          ▶
+                          <IconChevronRightOutline24 size={12} />
                         </span>
                         <Link
                           to={`/review/${review.id}/results`}

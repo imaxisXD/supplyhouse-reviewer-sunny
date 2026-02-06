@@ -1,6 +1,7 @@
 import { Elysia, t } from "elysia";
 import { redis } from "../db/redis.ts";
 import { createLogger } from "../config/logger.ts";
+import { JourneyStateSchema, ErrorResponse } from "./schemas.ts";
 
 const log = createLogger("api:journey");
 
@@ -79,7 +80,7 @@ export const journeyRoutes = new Elysia({ prefix: "/api" })
     const updatedAt = new Date().toISOString();
     await redis.set(JOURNEY_KEY, JSON.stringify({ step: inferred, updatedAt }));
     return { step: inferred, updatedAt };
-  })
+  }, { response: JourneyStateSchema })
   .put(
     "/journey",
     async ({ body, set }) => {
@@ -100,5 +101,9 @@ export const journeyRoutes = new Elysia({ prefix: "/api" })
       body: t.Object({
         step: t.String(),
       }),
+      response: {
+        200: JourneyStateSchema,
+        400: ErrorResponse,
+      },
     },
   );

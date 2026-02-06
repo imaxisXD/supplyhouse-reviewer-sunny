@@ -1,5 +1,6 @@
 import { BrowserRouter, Routes, Route } from "react-router-dom";
 import { lazy, Suspense } from "react";
+import { SWRConfig } from "swr";
 import { Sidebar } from "./components/Sidebar";
 import Home from "./pages/Home";
 import ReviewStatus from "./pages/ReviewStatus";
@@ -13,6 +14,7 @@ const RepoGraph = lazy(() => import("./pages/RepoGraph"));
 
 export default function App() {
   return (
+    <SWRConfig value={{ revalidateOnFocus: false, dedupingInterval: 2000, errorRetryCount: 2 }}>
     <BrowserRouter>
       <div className="h-screen overflow-hidden bg-white text-ink-950 font-mono antialiased">
         <div className="flex h-screen">
@@ -40,5 +42,6 @@ export default function App() {
         </div>
       </div>
     </BrowserRouter>
+    </SWRConfig>
   );
 }

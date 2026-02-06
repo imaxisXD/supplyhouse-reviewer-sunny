@@ -1,4 +1,4 @@
-import type { GraphNodeLabel, GraphEdgeType, GraphView } from "../api/client";
+import type { GraphNodeLabel, GraphEdgeType, GraphView } from "../api/types";
 
 export const NODE_COLORS: Record<GraphNodeLabel, string> = {
   File: "#f36a28",

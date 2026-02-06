@@ -1,11 +1,13 @@
 import { useEffect, useState, useRef } from "react";
 import { useParams, useNavigate } from "react-router-dom";
-import { getReviewStatus, connectWebSocket, cancelReview, getMastraSpans } from "../api/client";
-import type { ReviewStatus as ReviewStatusType, WSEvent, MastraSpan } from "../api/client";
+import { getReviewStatus, cancelReview, getMastraSpans } from "../api/client";
+import { connectWebSocket } from "../api/websocket";
+import type { ReviewStatus as ReviewStatusType, WSEvent, MastraSpan } from "../api/types";
 import ProgressBar from "../components/ProgressBar";
 import PhaseIndicator from "../components/PhaseIndicator";
 import InlineTracePanel from "../components/InlineTracePanel";
 import { advanceJourneyStep } from "../journey";
+import { IconChevronRightOutline24, IconChevronDownOutline24 } from "nucleo-core-essential-outline-24";
 
 const pillBaseClass = "border px-2.5 py-1 text-xs";
 
@@ -316,8 +318,10 @@ export default function ReviewStatus() {
                     {a.findingsCount} findings &middot; {(a.durationMs / 1000).toFixed(1)}s
                   </span>
                   {a.mastraTraceId && (
-                    <span className="ml-1.5 text-[10px]">
-                      {selectedTraceAgent === a.agent ? "▼" : "▶"}
+                    <span className="ml-1.5">
+                      {selectedTraceAgent === a.agent
+                        ? <IconChevronDownOutline24 size={10} />
+                        : <IconChevronRightOutline24 size={10} />}
                     </span>
                   )}
                 </button>

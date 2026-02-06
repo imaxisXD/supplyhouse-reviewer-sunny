@@ -1,25 +1,23 @@
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { Link, useNavigate } from "react-router-dom";
-import { getReviewsList, submitReview, validateToken } from "../api/client";
-import type { ReviewListItem, TokenValidationResult } from "../api/client";
+import ReactMarkdown from "react-markdown";
+import { useReviewsList, useRepoDocSummary, useValidateToken, useSubmitReview } from "../api/hooks";
+import type { TokenValidationResult } from "../api/types";
 import { useJourney, journeySteps, getJourneyStatus } from "../journey";
-
-const panelClass =
-  "border border-ink-900 bg-white p-4";
-const panelSoftClass = "border border-dashed border-ink-900 bg-warm-50 p-4";
-const panelTitleClass = "text-[10px] uppercase tracking-[0.35em] text-ink-600";
-const labelClass = "text-[10px] font-semibold uppercase tracking-[0.3em] text-ink-600";
-const inputClass =
-  "w-full border border-ink-900 bg-white px-3 py-2 text-sm text-ink-900 placeholder:text-ink-500 focus:outline-none focus:border-brand-500";
-const buttonPrimaryClass =
-  "inline-flex items-center justify-center gap-2 border border-brand-500 bg-brand-500 px-4 py-2 text-[11px] font-semibold uppercase tracking-[0.3em] text-white transition hover:bg-brand-400 disabled:cursor-not-allowed disabled:opacity-60";
-const buttonSecondaryClass =
-  "inline-flex items-center justify-center gap-2 border border-ink-900 bg-white px-4 py-2 text-[11px] font-semibold uppercase tracking-[0.3em] text-ink-700 transition hover:bg-warm-100 disabled:cursor-not-allowed disabled:opacity-60";
-const badgeBrandClass =
-  "inline-flex items-center gap-1 border border-brand-500/40 bg-brand-500/10 px-2 py-0.5 text-[10px] font-semibold uppercase tracking-[0.2em] text-brand-700";
-const tableHeaderClass = "px-4 py-3 text-[10px] uppercase tracking-[0.3em] text-ink-600";
-const tableRowClass = "border-t border-ink-900 hover:bg-warm-100/60 transition";
-const tableCellClass = "px-4 py-3 text-ink-700";
+import {
+  panelClass, panelSoftClass, panelTitleClass, labelClass, inputClass,
+  buttonPrimaryClass, buttonSecondaryClass, badgeBrandClass,
+  tableHeaderClass, tableRowClass, tableCellClass,
+} from "../utils/styles";
+import {
+  IconCheckOutline24,
+  IconCircleCheckOutline24,
+  IconFileContentOutline24,
+  IconChevronRightOutline24,
+  IconArrowDiagonalOut2Outline24,
+  IconRefreshOutline24,
+  IconCircleInfoOutline24,
+} from "nucleo-core-essential-outline-24";
 
 const stepNumberClass = (active: boolean, complete: boolean) =>
   `flex h-7 w-7 items-center justify-center text-xs font-semibold ${
@@ -33,48 +31,95 @@ const stepNumberClass = (active: boolean, complete: boolean) =>
 const stepTitleClass = (active: boolean) =>
   `text-sm font-semibold ${active ? "text-ink-950" : "text-ink-600"}`;
 
+function extractRepoId(value: string): string | null {
+  try {
+    const url = new URL(value);
+    const parts = url.pathname.split("/").filter(Boolean);
+    if (parts.length >= 2) {
+      return `${parts[0]}/${parts[1]}`;
+    }
+  } catch {
+    // ignore
+  }
+  return null;
+}
+
 export default function Home() {
   const navigate = useNavigate();
   const { currentStep, advanceStep, loading: journeyLoading } = useJourney();
   const [prUrl, setPrUrl] = useState("");
   const [email, setEmail] = useState("");
   const [token, setToken] = useState("");
-  const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
   const [showOptions, setShowOptions] = useState(false);
   const [skipSecurity, setSkipSecurity] = useState(false);
   const [skipDuplication, setSkipDuplication] = useState(false);
   const [priorityFiles, setPriorityFiles] = useState("");
-  const [recent, setRecent] = useState<ReviewListItem[]>([]);
-  const [recentLoading, setRecentLoading] = useState(false);
 
   // Token validation state
-  const [validating, setValidating] = useState(false);
   const [tokenValid, setTokenValid] = useState(false);
   const [validationResult, setValidationResult] = useState<TokenValidationResult | null>(null);
   const [showHelp, setShowHelp] = useState(false);
 
+  // Debounced repoId for doc summary fetching (avoids request per keystroke)
+  const [debouncedRepoId, setDebouncedRepoId] = useState<string | null>(null);
+
   const prUrlPattern = /^https?:\/\/bitbucket\.org\/[\w.-]+\/[\w.-]+\/pull-requests\/\d+/;
   const prUrlValid = prUrlPattern.test(prUrl);
+
+  const repoId = useMemo(() => (prUrlValid ? extractRepoId(prUrl) : null), [prUrlValid, prUrl]);
+
+  // Debounce repoId changes by 350ms to match the previous behavior
+  useEffect(() => {
+    if (!repoId) {
+      setDebouncedRepoId(null);
+      return;
+    }
+    const timer = setTimeout(() => setDebouncedRepoId(repoId), 350);
+    return () => clearTimeout(timer);
+  }, [repoId]);
+
+  // ── SWR: recent reviews ──
+  const {
+    data: reviewsData,
+    isLoading: recentLoading,
+  } = useReviewsList(10);
+  const recent = reviewsData?.reviews ?? [];
+
+  // Advance journey when reviews exist
+  useEffect(() => {
+    if (recent.length > 0) {
+      advanceStep("results");
+    }
+  }, [recent.length, advanceStep]);
+
+  // ── SWR: repo doc summary ──
+  const {
+    data: repoDocSummary,
+    error: repoDocSwrError,
+    isLoading: repoDocLoading,
+  } = useRepoDocSummary(debouncedRepoId ?? undefined);
+
+  const repoDocError = repoDocSwrError
+    ? (repoDocSwrError instanceof Error ? repoDocSwrError.message : "Failed to load repo docs")
+    : "";
+
+  // ── SWR mutations: validate token + submit review ──
+  const {
+    trigger: triggerValidate,
+    isMutating: validating,
+  } = useValidateToken();
+
+  const {
+    trigger: triggerSubmit,
+    isMutating: submitting,
+  } = useSubmitReview();
 
   // Reset validation when inputs change
   useEffect(() => {
     setTokenValid(false);
     setValidationResult(null);
   }, [prUrl, email, token]);
-
-  useEffect(() => {
-    setRecentLoading(true);
-    getReviewsList(10)
-      .then((res) => {
-        setRecent(res.reviews);
-        if (res.reviews.length > 0) {
-          advanceStep("results");
-        }
-      })
-      .catch(() => setRecent([]))
-      .finally(() => setRecentLoading(false));
-  }, [advanceStep]);
 
   const buildFullToken = () => {
     const trimmedEmail = email.trim();
@@ -83,9 +128,9 @@ export default function Home() {
       return `${trimmedEmail}:${trimmedToken}`;
     }
     return trimmedToken;
-  };
+  }
 
-  const handleValidate = async () => {
+  async function handleValidate(): Promise<void> {
     setError("");
     if (!prUrlValid) {
       setError("Enter a valid Bitbucket PR URL first");
@@ -96,9 +141,8 @@ export default function Home() {
       return;
     }
 
-    setValidating(true);
     try {
-      const result = await validateToken(prUrl, buildFullToken());
+      const result = await triggerValidate({ prUrl, token: buildFullToken() });
       setValidationResult(result);
       if (result.valid) {
         setTokenValid(true);
@@ -109,12 +153,10 @@ export default function Home() {
     } catch (err) {
       setError(err instanceof Error ? err.message : "Validation request failed");
       setTokenValid(false);
-    } finally {
-      setValidating(false);
     }
-  };
+  }
 
-  const handleSubmit = async (e: React.FormEvent) => {
+  async function handleSubmit(e: React.FormEvent): Promise<void> {
     e.preventDefault();
     setError("");
 
@@ -123,9 +165,8 @@ export default function Home() {
       return;
     }
 
-    setLoading(true);
     try {
-      const { reviewId } = await submitReview({
+      const { reviewId } = await triggerSubmit({
         prUrl,
         token: buildFullToken(),
         options: {
@@ -140,14 +181,13 @@ export default function Home() {
       navigate(`/review/${reviewId}`);
     } catch (err) {
       setError(err instanceof Error ? err.message : "Failed to submit review");
-    } finally {
-      setLoading(false);
     }
-  };
+  }
 
   const isFirstRun = !journeyLoading && !recentLoading && recent.length === 0 && currentStep === "submit";
 
   const activeStep = journeySteps.find((step) => step.id === currentStep);
+  const repoIdForDocs = prUrlValid ? extractRepoId(prUrl) : null;
 
   return (
     <div className="space-y-6">
@@ -231,9 +271,7 @@ export default function Home() {
               <div className="flex items-center gap-3">
                 <span className={stepNumberClass(true, prUrlValid)}>
                   {prUrlValid ? (
-                    <svg viewBox="0 0 16 16" fill="none" className="h-3.5 w-3.5">
-                      <path d="M3 8.5l3.5 3.5L13 4" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" />
-                    </svg>
+                    <IconCheckOutline24 size={14} />
                   ) : (
                     "1"
                   )}
@@ -255,13 +293,125 @@ export default function Home() {
                 />
                 {prUrlValid && (
                   <span className="absolute right-3 top-1/2 -translate-y-1/2 text-emerald-500">
-                    <svg viewBox="0 0 16 16" fill="none" className="h-4 w-4">
-                      <circle cx="8" cy="8" r="7" stroke="currentColor" strokeWidth="1.5" />
-                      <path d="M5 8l2 2 4-4" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" />
-                    </svg>
+                    <IconCircleCheckOutline24 size={16} />
                   </span>
                 )}
               </div>
+            </div>
+
+            {/* ── Repository Docs ── */}
+            <div className={`border border-t-0 border-ink-900 ${!prUrlValid ? "opacity-60" : ""}`}>
+              <div className="flex items-center gap-3 p-4 pb-0">
+                <span className="flex h-7 w-7 items-center justify-center border border-ink-900 bg-warm-50 text-ink-700">
+                  <IconFileContentOutline24 size={14} />
+                </span>
+                <span className={stepTitleClass(prUrlValid)}>Repository Docs</span>
+                {repoDocLoading ? (
+                  <span className="inline-flex items-center gap-1.5 px-2 py-0.5 text-[10px] font-semibold uppercase tracking-[0.2em] text-ink-600">
+                    <span className="inline-block h-1.5 w-1.5 rounded-full bg-ink-600 animate-pulse" />
+                    Checking
+                  </span>
+                ) : repoDocSummary?.hasDocs ? (
+                  <span className="inline-flex items-center gap-1.5 px-2 py-0.5 text-[10px] font-semibold uppercase tracking-[0.2em] text-emerald-700">
+                    <span className="inline-block h-1.5 w-1.5 rounded-full bg-emerald-500" />
+                    {repoDocSummary.docCount} {repoDocSummary.docCount === 1 ? "doc" : "docs"}
+                  </span>
+                ) : repoDocError ? (
+                  <span className="inline-flex items-center gap-1.5 px-2 py-0.5 text-[10px] font-semibold uppercase tracking-[0.2em] text-rose-700">
+                    <span className="inline-block h-1.5 w-1.5 rounded-full bg-rose-500" />
+                    Error
+                  </span>
+                ) : prUrlValid ? (
+                  <span className="inline-flex items-center gap-1.5 px-2 py-0.5 text-[10px] font-semibold uppercase tracking-[0.2em] text-amber-700">
+                    <span className="inline-block h-1.5 w-1.5 rounded-full bg-amber-500" />
+                    None
+                  </span>
+                ) : null}
+                <div className="ml-auto">
+                  {repoIdForDocs && (
+                    <Link
+                      to={`/repo/${encodeURIComponent(repoIdForDocs)}/docs`}
+                      className="inline-flex items-center gap-1.5 text-[10px] uppercase tracking-[0.2em] text-brand-600 hover:text-brand-700 transition"
+                    >
+                      {repoDocSummary?.hasDocs ? "Edit" : "Create"}
+                      <IconChevronRightOutline24 size={12} />
+                    </Link>
+                  )}
+                </div>
+              </div>
+              <p className="mt-1.5 ml-[52px] px-4 pb-3 text-xs text-ink-600">
+                Repo-specific rules and conventions injected into review agents.
+              </p>
+
+              {repoDocLoading && (
+                <div className="mx-4 mb-4 ml-[52px] border-t border-dashed border-ink-900/30 pt-3">
+                  <div className="flex items-center gap-2 text-xs text-ink-500">
+                    <IconRefreshOutline24 size={12} className="animate-spin" />
+                    Loading docs…
+                  </div>
+                </div>
+              )}
+
+              {repoDocError && (
+                <div className="mx-4 mb-4 ml-[52px] border border-rose-300/60 bg-rose-50/50 px-3 py-2 text-xs text-rose-700">
+                  {repoDocError}
+                </div>
+              )}
+
+              {!repoDocLoading && !repoDocError && repoDocSummary?.hasDocs && (
+                <div className="mx-4 mb-4 ml-[52px]">
+                  <div className="border border-ink-900/40 bg-warm-50/50">
+                    {repoDocSummary.latestUpdatedAt && (
+                      <div className="flex items-center justify-between border-b border-ink-900/20 px-3 py-1.5">
+                        <span className="text-[10px] uppercase tracking-[0.3em] text-ink-600">Preview</span>
+                        <span className="text-[10px] tracking-wide text-ink-500">
+                          Updated {repoDocSummary.latestUpdatedAt}
+                        </span>
+                      </div>
+                    )}
+                    <div className="max-h-36 overflow-y-auto p-3 scrollbar-thin">
+                      <ReactMarkdown
+                        components={{
+                          h3: ({ children }) => (
+                            <h3 className="text-[10px] font-semibold uppercase tracking-[0.25em] text-ink-800 mt-3 first:mt-0 mb-1.5 pb-1 border-b border-ink-900/10">
+                              {children}
+                            </h3>
+                          ),
+                          p: ({ children }) => <p className="text-xs leading-relaxed text-ink-700 mb-2 last:mb-0">{children}</p>,
+                          em: ({ children }) => <em className="text-ink-500 not-italic text-[11px]">{children}</em>,
+                          ul: ({ children }) => <ul className="ml-3 text-xs text-ink-700 space-y-0.5 mb-2 last:mb-0">{children}</ul>,
+                          li: ({ children }) => (
+                            <li className="relative pl-3 before:absolute before:left-0 before:top-[0.55em] before:h-[3px] before:w-[3px] before:bg-ink-600/50">
+                              {children}
+                            </li>
+                          ),
+                        }}
+                      >
+                        {repoDocSummary.summaryMarkdown}
+                      </ReactMarkdown>
+                    </div>
+                  </div>
+                </div>
+              )}
+
+              {!repoDocLoading && !repoDocError && !repoDocSummary?.hasDocs && prUrlValid && (
+                <div className="mx-4 mb-4 ml-[52px] border border-dashed border-ink-900/30 bg-warm-50/30 px-3 py-3">
+                  <div className="flex items-center gap-2 text-xs text-ink-600">
+                    <span className="text-ink-500 shrink-0 opacity-50">
+                      <IconFileContentOutline24 size={14} />
+                    </span>
+                    <span>No docs for this repo.</span>
+                    {repoIdForDocs && (
+                      <Link
+                        to={`/repo/${encodeURIComponent(repoIdForDocs)}/docs`}
+                        className="text-brand-600 hover:underline"
+                      >
+                        Add docs to improve reviews →
+                      </Link>
+                    )}
+                  </div>
+                </div>
+              )}
             </div>
 
             {/* ── Step 2: Token Validation ── */}
@@ -269,9 +419,7 @@ export default function Home() {
               <div className="flex items-center gap-3">
                 <span className={stepNumberClass(prUrlValid, tokenValid)}>
                   {tokenValid ? (
-                    <svg viewBox="0 0 16 16" fill="none" className="h-3.5 w-3.5">
-                      <path d="M3 8.5l3.5 3.5L13 4" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" />
-                    </svg>
+                    <IconCheckOutline24 size={14} />
                   ) : (
                     "2"
                   )}
@@ -304,9 +452,7 @@ export default function Home() {
                     className="mt-1 inline-flex items-center gap-1 text-[11px] text-brand-600 hover:underline"
                   >
                     Find your email
-                    <svg viewBox="0 0 12 12" fill="none" className="h-3 w-3">
-                      <path d="M3.5 2H10V8.5M10 2L2 10" stroke="currentColor" strokeWidth="1.2" strokeLinecap="round" strokeLinejoin="round" />
-                    </svg>
+                    <IconArrowDiagonalOut2Outline24 size={12} />
                   </a>
                 </div>
 
@@ -335,9 +481,7 @@ export default function Home() {
                         "Validating…"
                       ) : tokenValid ? (
                         <>
-                          <svg viewBox="0 0 16 16" fill="none" className="h-3.5 w-3.5 text-emerald-500">
-                            <path d="M3 8.5l3.5 3.5L13 4" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" />
-                          </svg>
+                          <IconCheckOutline24 size={14} className="text-emerald-500" />
                           Valid
                         </>
                       ) : (
@@ -351,9 +495,7 @@ export default function Home() {
                 {tokenValid && validationResult?.pr && (
                   <div className="border border-emerald-300 bg-emerald-50 p-3 text-xs text-emerald-800 space-y-1">
                     <div className="flex items-center gap-2">
-                      <svg viewBox="0 0 16 16" fill="none" className="h-3.5 w-3.5 text-emerald-500">
-                        <path d="M3 8.5l3.5 3.5L13 4" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" />
-                      </svg>
+                      <IconCheckOutline24 size={14} className="text-emerald-500" />
                       <span className="font-semibold">Token verified · API + Clone access confirmed</span>
                     </div>
                     {validationResult.username && (
@@ -378,10 +520,7 @@ export default function Home() {
                     onClick={() => setShowHelp(!showHelp)}
                     className="flex w-full items-center gap-2 px-3 py-2.5 text-[10px] text-ink-600 hover:text-ink-900 transition"
                   >
-                    <svg viewBox="0 0 16 16" fill="none" className="h-3.5 w-3.5 shrink-0">
-                      <circle cx="8" cy="8" r="6.5" stroke="currentColor" strokeWidth="1.2" />
-                      <text x="8" y="11.5" textAnchor="middle" fill="currentColor" fontSize="9" fontWeight="600">i</text>
-                    </svg>
+                    <IconCircleInfoOutline24 size={14} className="shrink-0" />
                     <span className="flex-1 text-left">How to connect using a Personal Access Token</span>
                     <span className="text-ink-500">{showHelp ? "−" : "›"}</span>
                   </button>
@@ -396,9 +535,7 @@ export default function Home() {
                           className="text-brand-600 hover:underline"
                         >
                           Personal Access Token
-                          <svg viewBox="0 0 12 12" fill="none" className="ml-0.5 inline h-3 w-3">
-                            <path d="M3.5 2H10V8.5M10 2L2 10" stroke="currentColor" strokeWidth="1.2" strokeLinecap="round" strokeLinejoin="round" />
-                          </svg>
+                          <IconArrowDiagonalOut2Outline24 size={12} className="ml-0.5 inline" />
                         </a>{" "}
                         on Bitbucket
                       </p>
@@ -486,10 +623,10 @@ export default function Home() {
 
                 <button
                   type="submit"
-                  disabled={!tokenValid || loading}
+                  disabled={!tokenValid || submitting}
                   className={`${buttonPrimaryClass} w-full`}
                 >
-                  {loading ? "Submitting…" : "Start Review"}
+                  {submitting ? "Submitting…" : "Start Review"}
                 </button>
               </div>
             </div>

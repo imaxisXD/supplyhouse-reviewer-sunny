@@ -1,6 +1,7 @@
-import { useEffect, useState } from "react";
-import { getReviewsList, getReviewResult } from "../api/client";
-import type { ReviewListItem, AgentTrace } from "../api/client";
+import { useState } from "react";
+import { getReviewResult } from "../api/client";
+import { useReviewsList } from "../api/hooks";
+import type { ReviewListItem, AgentTrace } from "../api/types";
 
 const STATUS_BAR_COLORS: Record<string, string> = {
   success: "bg-emerald-500",
@@ -15,33 +16,25 @@ const STATUS_TEXT_COLORS: Record<string, string> = {
 };
 
 export default function TraceViewer() {
-  const [reviews, setReviews] = useState<ReviewListItem[]>([]);
+  const { data, isLoading: loadingList, error: swrError } = useReviewsList(30);
+  const reviews: ReviewListItem[] = data?.reviews ?? [];
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [traces, setTraces] = useState<AgentTrace[]>([]);
-  const [loadingList, setLoadingList] = useState(true);
   const [loadingTraces, setLoadingTraces] = useState(false);
-  const [error, setError] = useState("");
-
-  useEffect(() => {
-    getReviewsList(30)
-      .then((data) => {
-        setReviews(data.reviews);
-      })
-      .catch((err) => setError(err.message))
-      .finally(() => setLoadingList(false));
-  }, []);
+  const [traceError, setTraceError] = useState("");
+  const error = swrError?.message ?? traceError;
 
   const handleSelectReview = async (id: string) => {
     setSelectedId(id);
     setLoadingTraces(true);
     setTraces([]);
-    setError("");
+    setTraceError("");
 
     try {
       const result = await getReviewResult(id);
       setTraces(result.traces ?? []);
     } catch (err) {
-      setError(err instanceof Error ? err.message : "Failed to load traces");
+      setTraceError(err instanceof Error ? err.message : "Failed to load traces");
     } finally {
       setLoadingTraces(false);
     }

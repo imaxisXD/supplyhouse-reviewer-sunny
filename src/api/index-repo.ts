@@ -7,6 +7,16 @@ import { indexTokenKey, storeToken } from "../utils/token-store.ts";
 import { deriveRepoIdFromUrl } from "../utils/repo-identity.ts";
 import { indexCancelKey, markCancelled } from "../utils/cancellation.ts";
 import { getRepoMeta, listRepoMeta } from "../utils/repo-meta.ts";
+import {
+  IndexIdResponseSchema,
+  RepoMetaSchema,
+  RepoMetaListResponseSchema,
+  IndexStatusSchema,
+  IndexFrameworksResponseSchema,
+  IndexJobsResponseSchema,
+  CancelResponseSchema,
+  ErrorResponse,
+} from "./schemas.ts";
 
 const log = createLogger("api:index");
 const FRAMEWORK_IDS = ["react", "typescript", "java", "spring-boot", "flutter", "ftl"] as const;
@@ -19,7 +29,7 @@ function normalizeFramework(value?: string): string | undefined {
 }
 
 
-export const indexRoutes = new Elysia({ prefix: "/api/index" })
+export const indexRoutes = new Elysia({ prefix: "/api/indexing" })
   .post(
     "/",
     async ({ body, set }) => {
@@ -76,6 +86,10 @@ export const indexRoutes = new Elysia({ prefix: "/api/index" })
         framework: t.Optional(FrameworkSchema),
         includeEmbeddings: t.Optional(t.Boolean()),
       }),
+      response: {
+        201: IndexIdResponseSchema,
+        400: ErrorResponse,
+      },
     }
   )
   .post(
@@ -148,6 +162,11 @@ export const indexRoutes = new Elysia({ prefix: "/api/index" })
         framework: t.Optional(FrameworkSchema),
         includeEmbeddings: t.Optional(t.Boolean()),
       }),
+      response: {
+        201: IndexIdResponseSchema,
+        400: ErrorResponse,
+        404: ErrorResponse,
+      },
     },
   )
   .post(
@@ -214,12 +233,16 @@ export const indexRoutes = new Elysia({ prefix: "/api/index" })
         changedFiles: t.Array(t.String({ minLength: 1 }), { minItems: 1 }),
         includeEmbeddings: t.Optional(t.Boolean()),
       }),
+      response: {
+        201: IndexIdResponseSchema,
+        400: ErrorResponse,
+      },
     }
   )
   .get("/meta", async () => {
     const items = await listRepoMeta();
     return { items };
-  })
+  }, { response: RepoMetaListResponseSchema })
   .get(
     "/meta/:repoId",
     async ({ params, set }) => {
@@ -232,6 +255,10 @@ export const indexRoutes = new Elysia({ prefix: "/api/index" })
     },
     {
       params: t.Object({ repoId: t.String({ minLength: 1 }) }),
+      response: {
+        200: RepoMetaSchema,
+        404: ErrorResponse,
+      },
     },
   )
   .get("/:id/status", async ({ params, set }) => {
@@ -241,6 +268,11 @@ export const indexRoutes = new Elysia({ prefix: "/api/index" })
       return { error: "Index job not found" };
     }
     return JSON.parse(data);
+  }, {
+    response: {
+      200: IndexStatusSchema,
+      404: ErrorResponse,
+    },
   })
   .delete("/:id", async ({ params, set }) => {
     const { id } = params;
@@ -306,6 +338,11 @@ export const indexRoutes = new Elysia({ prefix: "/api/index" })
       set.status = 500;
       return { error: "Failed to cancel index job" };
     }
+  }, {
+    response: {
+      200: CancelResponseSchema,
+      500: ErrorResponse,
+    },
   })
   .get("/frameworks", () => {
     return {
@@ -318,12 +355,10 @@ export const indexRoutes = new Elysia({ prefix: "/api/index" })
         { id: "ftl", name: "FTL (FreeMarker)", languages: ["FTL"] },
       ],
     };
-  })
+  }, { response: IndexFrameworksResponseSchema })
   .get("/jobs", async ({ query }) => {
-    const limit = Math.min(parseInt((query as Record<string, string>).limit ?? "20", 10), 100);
-    const rawOffset = (query as Record<string, string>).offset
-      ?? (query as Record<string, string>).cursor
-      ?? "0";
+    const limit = Math.min(parseInt(query.limit ?? "20", 10), 100);
+    const rawOffset = query.offset ?? query.cursor ?? "0";
     const offset = Math.max(parseInt(rawOffset, 10) || 0, 0);
     try {
       const keys: string[] = [];
@@ -360,4 +395,11 @@ export const indexRoutes = new Elysia({ prefix: "/api/index" })
       log.error({ error: error instanceof Error ? error.message : String(error) }, "Failed to list index jobs");
       return { jobs: [], total: 0, nextOffset: null };
     }
+  }, {
+    query: t.Object({
+      limit: t.Optional(t.String()),
+      offset: t.Optional(t.String()),
+      cursor: t.Optional(t.String()),
+    }),
+    response: IndexJobsResponseSchema,
   });

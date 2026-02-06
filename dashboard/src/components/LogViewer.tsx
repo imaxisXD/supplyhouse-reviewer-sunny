@@ -1,6 +1,6 @@
-import { useEffect, useState } from "react";
-import { getReviewsList } from "../api/client";
-import type { ReviewListItem } from "../api/client";
+import { useState } from "react";
+import { useReviewsList } from "../api/hooks";
+import type { ReviewListItem } from "../api/types";
 
 type LogLevel = "all" | "info" | "warning" | "error";
 
@@ -27,18 +27,11 @@ const inputClass =
   "w-full border border-ink-900 bg-white px-3 py-2 text-sm text-ink-900 placeholder:text-ink-500 focus:outline-none focus:border-brand-500";
 
 export default function LogViewer() {
-  const [reviews, setReviews] = useState<ReviewListItem[]>([]);
-  const [loading, setLoading] = useState(true);
-  const [error, setError] = useState("");
+  const { data, isLoading: loading, error: swrError } = useReviewsList(100);
+  const reviews = data?.reviews ?? [];
+  const error = swrError?.message ?? "";
   const [filter, setFilter] = useState<LogLevel>("all");
   const [search, setSearch] = useState("");
-
-  useEffect(() => {
-    getReviewsList(100)
-      .then((data) => setReviews(data.reviews))
-      .catch((err) => setError(err.message))
-      .finally(() => setLoading(false));
-  }, []);
 
   const filtered = reviews.filter((review) => {
     const level = getLogLevel(review);

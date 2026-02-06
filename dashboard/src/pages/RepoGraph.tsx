@@ -3,8 +3,10 @@ import { useParams, Link } from "react-router-dom";
 import ForceGraph3D from "react-force-graph-3d";
 import type { ForceGraphMethods } from "react-force-graph-3d";
 import * as THREE from "three";
-import { getRepoGraph, submitForceReindex, connectIndexWebSocket, cancelIndex, getRepoMeta } from "../api/client";
-import type { GraphNode, GraphLink, GraphNodeLabel, GraphEdgeType, GraphView, RepoMeta } from "../api/client";
+import { submitForceReindex, cancelIndex } from "../api/client";
+import { connectIndexWebSocket } from "../api/websocket";
+import { useRepoGraph, useRepoMeta } from "../api/hooks";
+import type { GraphNode, GraphLink, GraphNodeLabel, GraphEdgeType, GraphView } from "../api/types";
 import GraphLegend, {
   NODE_COLORS,
   EDGE_COLORS,
@@ -74,14 +76,37 @@ export default function RepoGraph() {
   const containerRef = useRef<HTMLDivElement>(null);
   const hasZoomedRef = useRef(false);
 
-  const [graphData, setGraphData] = useState<{ nodes: FGNode[]; links: FGLink[] } | null>(null);
   const [graphView, setGraphView] = useState<GraphView>("overview");
-  const [loading, setLoading] = useState(true);
-  const [error, setError] = useState("");
   const [dimensions, setDimensions] = useState({ width: 800, height: 600 });
-  const [refreshKey, setRefreshKey] = useState(0);
+
+  // SWR hooks for graph data and repo metadata
+  const {
+    data: rawGraphData,
+    isLoading: loading,
+    error: graphError,
+    mutate: mutateGraph,
+  } = useRepoGraph(decodedRepoId || undefined, graphView);
 
   const [reindexOpen, setReindexOpen] = useState(false);
+
+  const {
+    data: repoMeta,
+    isLoading: repoMetaLoading,
+    error: repoMetaSwrError,
+  } = useRepoMeta(reindexOpen ? decodedRepoId || undefined : undefined);
+
+  const repoMetaError = repoMetaSwrError
+    ? repoMetaSwrError instanceof Error
+      ? repoMetaSwrError.message
+      : "Failed to load repo metadata"
+    : "";
+
+  const error = graphError
+    ? graphError instanceof Error
+      ? graphError.message
+      : "Failed to load graph"
+    : "";
+
   const [reindexEmail, setReindexEmail] = useState("");
   const [reindexToken, setReindexToken] = useState("");
   const [reindexBranch, setReindexBranch] = useState("");
@@ -90,9 +115,6 @@ export default function RepoGraph() {
   const [reindexCancelling, setReindexCancelling] = useState(false);
   const [reindexJob, setReindexJob] = useState<IndexJobState | null>(null);
   const reindexCleanupRef = useRef<(() => void) | null>(null);
-  const [repoMeta, setRepoMeta] = useState<RepoMeta | null>(null);
-  const [repoMetaError, setRepoMetaError] = useState("");
-  const [repoMetaLoading, setRepoMetaLoading] = useState(false);
 
   // Interaction state
   const [hoveredNode, setHoveredNode] = useState<FGNode | null>(null);
@@ -136,33 +158,12 @@ export default function RepoGraph() {
     };
   }, []);
 
+  // Sync branch from repoMeta when it first loads
   useEffect(() => {
-    if (!reindexOpen || !decodedRepoId) return;
-    let active = true;
-    setRepoMetaLoading(true);
-    setRepoMetaError("");
-    getRepoMeta(decodedRepoId)
-      .then((meta) => {
-        if (!active) return;
-        setRepoMeta(meta);
-        if (!reindexBranch && meta.branch) {
-          setReindexBranch(meta.branch);
-        }
-      })
-      .catch((err) => {
-        if (!active) return;
-        setRepoMeta(null);
-        setRepoMetaError(err instanceof Error ? err.message : "Failed to load repo metadata");
-      })
-      .finally(() => {
-        if (!active) return;
-        setRepoMetaLoading(false);
-      });
-
-    return () => {
-      active = false;
-    };
-  }, [reindexOpen, decodedRepoId]);
+    if (repoMeta && !reindexBranch && repoMeta.branch) {
+      setReindexBranch(repoMeta.branch);
+    }
+  }, [repoMeta, reindexBranch]);
 
   useEffect(() => {
     if (graphView !== "overview") return;
@@ -178,52 +179,32 @@ export default function RepoGraph() {
     }));
   }, [graphView]);
 
-  // Fetch graph data
+  // Derive graphData from SWR rawGraphData, enriching nodes with connection counts
+  const graphData = useMemo(() => {
+    if (!rawGraphData) return null;
+    const connectionCount: Record<string, number> = {};
+    for (const link of rawGraphData.links) {
+      connectionCount[link.source] = (connectionCount[link.source] ?? 0) + 1;
+      connectionCount[link.target] = (connectionCount[link.target] ?? 0) + 1;
+    }
+    const nodes: FGNode[] = rawGraphData.nodes.map((n) => ({
+      ...n,
+      __connections: connectionCount[n.id] ?? 0,
+    }));
+    return { nodes, links: rawGraphData.links as FGLink[] };
+  }, [rawGraphData]);
+
+  // Reset interaction state & dispose Three.js objects when graph data changes
   useEffect(() => {
-    if (!decodedRepoId) return;
-    let active = true;
-    setLoading(true);
-    setError("");
-    setGraphData(null);
     setSelectedNode(null);
     setHoveredNode(null);
-
-    // Dispose previous graph's Three.js objects before loading new data
     for (const group of nodeObjectsRef.current.values()) {
       disposeGroup(group);
     }
     nodeObjectsRef.current.clear();
     prevHighlightRef.current.clear();
     hasZoomedRef.current = false;
-
-    getRepoGraph(decodedRepoId, graphView)
-      .then((data) => {
-        if (!active) return;
-        // Pre-compute connection counts for node sizing
-        const connectionCount: Record<string, number> = {};
-        for (const link of data.links) {
-          connectionCount[link.source] = (connectionCount[link.source] ?? 0) + 1;
-          connectionCount[link.target] = (connectionCount[link.target] ?? 0) + 1;
-        }
-        const nodes: FGNode[] = data.nodes.map((n) => ({
-          ...n,
-          __connections: connectionCount[n.id] ?? 0,
-        }));
-        setGraphData({ nodes, links: data.links as FGLink[] });
-      })
-      .catch((err) => {
-        if (!active) return;
-        setError(err instanceof Error ? err.message : "Failed to load graph");
-      })
-      .finally(() => {
-        if (!active) return;
-        setLoading(false);
-      });
-
-    return () => {
-      active = false;
-    };
-  }, [decodedRepoId, graphView, refreshKey]);
+  }, [rawGraphData]);
 
   // Dispose all cached Three.js objects on unmount
   useEffect(() => {
@@ -676,7 +657,7 @@ export default function RepoGraph() {
           if (phase === "complete" || phase === "failed") {
             reindexCleanupRef.current?.();
             if (phase === "complete") {
-              setRefreshKey((prev) => prev + 1);
+              void mutateGraph();
             }
           }
         });
@@ -686,7 +667,7 @@ export default function RepoGraph() {
         setReindexLoading(false);
       }
     },
-    [decodedRepoId, reindexBranch, buildReindexToken],
+    [decodedRepoId, reindexBranch, buildReindexToken, mutateGraph],
   );
 
   const handleReindexCancel = useCallback(async () => {

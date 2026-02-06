@@ -10,10 +10,13 @@
     "preview": "vite preview"
   },
   "dependencies": {
+    "@elysiajs/eden": "^1.4.6",
+    "nucleo-core-essential-outline-24": "^1.1.5",
     "react": "^19.0.0",
     "react-dom": "^19.0.0",
     "react-force-graph-3d": "^1.29.0",
     "react-router-dom": "^7.1.0",
+    "swr": "^2.4.0",
     "three": "^0.182.0"
   },
   "devDependencies": {
@@ -23,6 +26,7 @@
     "@types/react-dom": "^19.0.0",
     "@types/three": "^0.182.0",
     "@vitejs/plugin-react": "^4.3.4",
+    "elysia": "^1.4.22",
     "eslint": "^9.17.0",
     "eslint-plugin-react-hooks": "^5.0.0",
     "eslint-plugin-react-refresh": "^0.4.16",

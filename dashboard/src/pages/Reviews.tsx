@@ -1,18 +1,14 @@
-import { Fragment, useCallback, useEffect, useRef, useState } from "react";
+import { Fragment, useState } from "react";
 import { Link } from "react-router-dom";
-import { getReviewsList } from "../api/client";
-import type { ReviewListItem } from "../api/client";
+import { useReviewsList } from "../api/hooks";
+import type { ReviewListItem } from "../api/types";
+import { formatDurationMs } from "../utils/format";
+import { statCardClass, statLabelClass, statValueClass, tableHeaderClass, tableRowClass, tableCellClass } from "../utils/styles";
+import { IconChevronRightOutline24 } from "nucleo-core-essential-outline-24";
 
 type FilterValue = "all" | "complete" | "failed" | "in-progress" | "queued";
 
 const ACTIVE_PHASES = new Set(["queued", "fetching-pr", "building-context", "running-agents", "synthesizing", "posting-comments", "cancelling"]);
-
-const statCardClass = "border border-ink-900 bg-white p-4";
-const statLabelClass = "text-[10px] uppercase tracking-[0.3em] text-ink-600";
-const statValueClass = "mt-2 text-xl font-semibold text-ink-950";
-const tableHeaderClass = "px-4 py-3 text-[10px] uppercase tracking-[0.3em] text-ink-600";
-const tableRowClass = "border-t border-ink-900 hover:bg-warm-100/60 transition";
-const tableCellClass = "px-4 py-3 text-ink-700";
 
 function phaseToBucket(phase: string): FilterValue {
   if (phase === "complete") return "complete";
@@ -48,12 +44,6 @@ function StatusBadge({ phase }: { phase: string }) {
   );
 }
 
-function formatDuration(ms: number): string {
-  if (ms <= 0) return "-";
-  const s = ms / 1000;
-  if (s < 60) return `${s.toFixed(1)}s`;
-  return `${Math.floor(s / 60)}m ${Math.round(s % 60)}s`;
-}
 
 function formatDate(iso: string | undefined): string {
   if (!iso) return "-";
@@ -64,39 +54,18 @@ function formatDate(iso: string | undefined): string {
 }
 
 export default function Reviews() {
-  const [reviews, setReviews] = useState<ReviewListItem[]>([]);
-  const [loading, setLoading] = useState(true);
-  const [error, setError] = useState("");
   const [filter, setFilter] = useState<FilterValue>("all");
   const [expandedError, setExpandedError] = useState<string | null>(null);
-  const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
-  const fetchReviews = useCallback(async () => {
-    try {
-      const res = await getReviewsList(100);
-      setReviews(res.reviews ?? []);
-      setError("");
-    } catch (err) {
-      setError(err instanceof Error ? err.message : "Failed to load reviews");
-    } finally {
-      setLoading(false);
-    }
-  }, []);
-
-  useEffect(() => {
-    void fetchReviews();
-  }, [fetchReviews]);
-
-  // Auto-poll when there are active reviews
-  useEffect(() => {
-    const hasActive = reviews.some((r) => ACTIVE_PHASES.has(r.phase));
-    if (hasActive) {
-      pollRef.current = setInterval(() => void fetchReviews(), 5000);
-    }
-    return () => {
-      if (pollRef.current) clearInterval(pollRef.current);
-    };
-  }, [reviews, fetchReviews]);
+  const { data, isLoading: loading, error: swrError } = useReviewsList(100, {
+    refreshInterval: (latestData) => {
+      const reviews = latestData?.reviews ?? [];
+      const hasActive = reviews.some((r: ReviewListItem) => ACTIVE_PHASES.has(r.phase));
+      return hasActive ? 5000 : 0;
+    },
+  });
+  const reviews = data?.reviews ?? [];
+  const error = swrError?.message ?? "";
 
   const filtered = filter === "all" ? reviews : reviews.filter((r) => phaseToBucket(r.phase) === filter);
 
@@ -213,8 +182,8 @@ export default function Reviews() {
                   >
                     <td className={`${tableCellClass} flex items-center gap-2`}>
                       {review.phase === "failed" && review.error && (
-                        <span className={`text-[10px] transition-transform ${expandedError === review.id ? "rotate-90" : ""}`}>
-                          &#9654;
+                        <span className={`transition-transform ${expandedError === review.id ? "rotate-90" : ""}`}>
+                          <IconChevronRightOutline24 size={10} />
                         </span>
                       )}
                       <Link
@@ -247,7 +216,7 @@ export default function Reviews() {
                       {review.phase === "complete" ? review.totalFindings : "-"}
                     </td>
                     <td className={`${tableCellClass} text-right tabular-nums`}>
-                      {formatDuration(review.durationMs)}
+                      {formatDurationMs(review.durationMs)}
                     </td>
                     <td className={`${tableCellClass} text-right tabular-nums`}>
                       {review.costUsd > 0 ? `$${review.costUsd.toFixed(4)}` : "-"}

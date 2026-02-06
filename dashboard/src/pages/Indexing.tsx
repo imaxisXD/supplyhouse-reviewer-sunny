@@ -1,23 +1,14 @@
 import { useState, useRef, useEffect } from "react";
-import { submitIndex, submitIncrementalIndex, connectIndexWebSocket, getIndexJobs, getIndexFrameworks, cancelIndex } from "../api/client";
-import type { IndexFramework } from "../api/client";
+import { submitIndex, submitIncrementalIndex, cancelIndex } from "../api/client";
+import { connectIndexWebSocket } from "../api/websocket";
+import { useIndexJobs, useIndexFrameworks } from "../api/hooks";
+import type { IndexFramework } from "../api/types";
 import { advanceJourneyStep } from "../journey";
-
-const panelClass =
-  "border border-ink-900 bg-white p-4";
-const panelTitleClass = "text-[10px] uppercase tracking-[0.35em] text-ink-600";
-const labelClass = "text-[10px] font-semibold uppercase tracking-[0.3em] text-ink-600";
-const inputClass =
-  "w-full border border-ink-900 bg-white px-3 py-2 text-sm text-ink-900 placeholder:text-ink-500 focus:outline-none focus:border-brand-500";
-const buttonPrimaryClass =
-  "inline-flex items-center justify-center gap-2 border border-brand-500 bg-brand-500 px-4 py-2 text-[11px] font-semibold uppercase tracking-[0.3em] text-white transition hover:bg-brand-400 disabled:cursor-not-allowed disabled:opacity-60";
-const statCardClass = "border border-ink-900 bg-white p-4";
-const statLabelClass = "text-[10px] uppercase tracking-[0.3em] text-ink-600";
-const tableHeaderClass = "px-4 py-3 text-[10px] uppercase tracking-[0.3em] text-ink-600";
-const tableRowClass = "border-t border-ink-900 hover:bg-warm-100/60 transition";
-const tableCellClass = "px-4 py-3 text-ink-700";
-const badgeBaseClass =
-  "inline-flex items-center border px-2 py-0.5 text-[10px] font-semibold uppercase tracking-[0.2em]";
+import {
+  panelClass, panelTitleClass, labelClass, inputClass, buttonPrimaryClass,
+  statCardClass, statLabelClass, tableHeaderClass, tableRowClass, tableCellClass, badgeBaseClass,
+} from "../utils/styles";
+import { IconArrowDiagonalOut2Outline24 } from "nucleo-core-essential-outline-24";
 
 interface IndexJob {
   id: string;
@@ -42,8 +33,10 @@ export default function Indexing() {
   const [error, setError] = useState("");
   const [cancelling, setCancelling] = useState(false);
   const [job, setJob] = useState<IndexJob | null>(null);
-  const [pastJobs, setPastJobs] = useState<Record<string, unknown>[]>([]);
-  const [frameworks, setFrameworks] = useState<IndexFramework[]>([]);
+  const { data: jobsData, mutate: mutateJobs } = useIndexJobs({ limit: 20 });
+  const pastJobs = jobsData?.jobs ?? [];
+  const { data: frameworksData } = useIndexFrameworks();
+  const frameworks: IndexFramework[] = (frameworksData?.frameworks ?? []) as IndexFramework[];
   const cleanupRef = useRef<(() => void) | null>(null);
 
   useEffect(() => {
@@ -54,18 +47,6 @@ export default function Indexing() {
     return () => {
       cleanupRef.current?.();
     };
-  }, []);
-
-  useEffect(() => {
-    getIndexJobs(20)
-      .then((data) => setPastJobs(data.jobs ?? []))
-      .catch(() => {});
-  }, []);
-
-  useEffect(() => {
-    getIndexFrameworks()
-      .then((data) => setFrameworks(data.frameworks ?? []))
-      .catch(() => setFrameworks([]));
   }, []);
 
   const handleReindex = (pastJob: Record<string, unknown>) => {
@@ -140,7 +121,7 @@ export default function Indexing() {
         const phase = event.phase as string | undefined;
         if (phase === "complete" || phase === "failed") {
           cleanupRef.current?.();
-          getIndexJobs(20).then((data) => setPastJobs(data.jobs ?? [])).catch(() => {});
+          void mutateJobs();
         }
       });
     } catch (err) {
@@ -212,9 +193,7 @@ export default function Indexing() {
                 className="mt-1 inline-flex items-center gap-1 text-[10px] text-brand-600 hover:underline"
               >
                 Find your email
-                <svg viewBox="0 0 12 12" fill="none" className="h-3 w-3">
-                  <path d="M3.5 2H10V8.5M10 2L2 10" stroke="currentColor" strokeWidth="1.2" strokeLinecap="round" strokeLinejoin="round" />
-                </svg>
+                <IconArrowDiagonalOut2Outline24 size={12} />
               </a>
             </div>
 

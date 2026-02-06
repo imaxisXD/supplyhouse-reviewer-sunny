@@ -1,13 +1,20 @@
-import { Elysia } from "elysia";
+import { Elysia, t } from "elysia";
 import { redis } from "../db/redis.ts";
 import { getBreakerStates } from "../services/breakers.ts";
 import { createLogger } from "../config/logger.ts";
+import { fetchOpenRouterCostUsd } from "../services/openrouter-cost.ts";
+import {
+  ReviewsListResponseSchema,
+  MetricsSchema,
+  RefreshCostsResponseSchema,
+  ErrorResponse,
+} from "./schemas.ts";
 
 const log = createLogger("api:reviews-list");
 
 export const reviewsListRoutes = new Elysia({ prefix: "/api" })
   .get("/reviews", async ({ query }) => {
-    const limit = Math.min(parseInt((query as Record<string, string>).limit ?? "50", 10), 200);
+    const limit = Math.min(parseInt(query.limit ?? "50", 10), 200);
 
     // UUID pattern to filter only review:<uuid> keys (not review:result:*, review:cancel:*, etc.)
     const UUID_RE = /^review:([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})$/;
@@ -80,6 +87,11 @@ export const reviewsListRoutes = new Elysia({ prefix: "/api" })
       log.error({ error: error instanceof Error ? error.message : String(error) }, "Failed to list reviews");
       return { reviews: [], total: 0 };
     }
+  }, {
+    query: t.Object({
+      limit: t.Optional(t.String()),
+    }),
+    response: ReviewsListResponseSchema,
   })
   .get("/metrics", async () => {
     const MAX_METRICS_KEYS = 1000;
@@ -143,4 +155,131 @@ export const reviewsListRoutes = new Elysia({ prefix: "/api" })
         circuitBreakers: {},
       };
     }
+  }, { response: MetricsSchema })
+  .post("/metrics/refresh-costs", async ({ set }) => {
+    const MAX_KEYS = 1000;
+    try {
+      const keys: string[] = [];
+      let cursor = "0";
+      do {
+        const [nextCursor, batch] = await redis.scan(cursor, "MATCH", "review:result:*", "COUNT", 100);
+        cursor = nextCursor;
+        keys.push(...batch);
+      } while (cursor !== "0" && keys.length < MAX_KEYS);
+
+      let updatedCount = 0;
+      let skippedCount = 0;
+      let errorCount = 0;
+
+      for (const key of keys) {
+        try {
+          const raw = await redis.get(key);
+          if (!raw) continue;
+          const result = JSON.parse(raw);
+          const traces = result.traces as Array<Record<string, unknown>> | undefined;
+          if (!Array.isArray(traces) || traces.length === 0) {
+            skippedCount++;
+            continue;
+          }
+
+          const tracesWithGenId = traces.filter(
+            (t) => typeof t.generationId === "string" && (t.generationId as string).length > 0,
+          );
+          if (tracesWithGenId.length === 0) {
+            skippedCount++;
+            continue;
+          }
+
+          let reviewCostChanged = false;
+          let newTotalCost = 0;
+
+          for (const trace of traces) {
+            if (typeof trace.generationId === "string" && (trace.generationId as string).length > 0) {
+              const freshCost = await fetchOpenRouterCostUsd(trace.generationId as string);
+              if (freshCost !== null && freshCost !== trace.costUsd) {
+                trace.costUsd = freshCost;
+                reviewCostChanged = true;
+              }
+            }
+            newTotalCost += typeof trace.costUsd === "number" ? trace.costUsd : 0;
+          }
+
+          if (reviewCostChanged) {
+            if (result.summary) {
+              result.summary.costUsd = newTotalCost;
+            }
+            await redis.set(key, JSON.stringify(result));
+            updatedCount++;
+          } else {
+            skippedCount++;
+          }
+        } catch (err) {
+          log.warn(
+            { key, error: err instanceof Error ? err.message : String(err) },
+            "Failed to refresh cost for review",
+          );
+          errorCount++;
+        }
+      }
+
+      log.info(
+        { totalKeys: keys.length, updatedCount, skippedCount, errorCount },
+        "Cost refresh completed",
+      );
+
+      // Re-compute fresh metrics after updates
+      let totalReviews = 0;
+      let totalFindings = 0;
+      let totalDurationMs = 0;
+      let totalCostUsd = 0;
+      const severityCounts = { critical: 0, high: 0, medium: 0, low: 0, info: 0 };
+
+      for (const key of keys) {
+        try {
+          const raw = await redis.get(key);
+          if (!raw) continue;
+          totalReviews++;
+          const result = JSON.parse(raw);
+          const summary = result.summary;
+          if (summary) {
+            totalFindings += summary.totalFindings ?? 0;
+            totalDurationMs += summary.durationMs ?? 0;
+            totalCostUsd += summary.costUsd ?? 0;
+            if (summary.bySeverity) {
+              severityCounts.critical += summary.bySeverity.critical ?? 0;
+              severityCounts.high += summary.bySeverity.high ?? 0;
+              severityCounts.medium += summary.bySeverity.medium ?? 0;
+              severityCounts.low += summary.bySeverity.low ?? 0;
+              severityCounts.info += summary.bySeverity.info ?? 0;
+            }
+          }
+        } catch {
+          // Skip
+        }
+      }
+
+      const circuitBreakers = getBreakerStates();
+
+      return {
+        totalReviews,
+        totalFindings,
+        avgDurationMs: totalReviews > 0 ? Math.round(totalDurationMs / totalReviews) : 0,
+        totalCostUsd: Math.round(totalCostUsd * 10000) / 10000,
+        severityCounts,
+        circuitBreakers,
+        refreshStats: { updatedCount, skippedCount, errorCount },
+      };
+    } catch (error) {
+      log.error(
+        { error: error instanceof Error ? error.message : String(error) },
+        "Failed to refresh costs",
+      );
+      set.status = 500;
+      return { error: "Failed to refresh costs" };
+    }
+  }, {
+    response: {
+      200: RefreshCostsResponseSchema,
+      500: ErrorResponse,
+    },
   });
