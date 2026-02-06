@@ -125,7 +125,17 @@ export default function Observability() {
           <div className={statValueClass}>{(metrics.avgDurationMs / 1000).toFixed(1)}s</div>
         </div>
         <div className={statCardClass}>
-          <div className={statLabelClass}>Total Cost</div>
+          <div className="flex items-center justify-between">
+            <div className={statLabelClass}>Total Cost</div>
+            <button
+              onClick={handleRefreshCosts}
+              disabled={refreshing}
+              className="text-[10px] text-ink-500 hover:text-brand-600 disabled:opacity-50 transition-colors"
+              title="Re-fetch costs from OpenRouter"
+            >
+              {refreshing ? "Refreshing…" : "↻ Refresh"}
+            </button>
+          </div>
           <div className={`${statValueClass} text-emerald-600`}>${metrics.totalCostUsd.toFixed(4)}</div>
         </div>
       </div>
