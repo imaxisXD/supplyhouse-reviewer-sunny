@@ -76,7 +76,7 @@ export function useUpdateRepoDoc(docId: string) {
 
 export function useDeleteRepoDoc() {
   return useSWRMutation(
-    "/api/docs/delete",
+    "/api/docs",
     async (_key, { arg }: { arg: string }) =>
       unwrap(await api.api.docs({ docId: arg }).delete()),
   );
@@ -316,19 +316,13 @@ export function useHealth(config?: SWRConfiguration) {
 export function useMastraTraces(
   params?: {
     limit?: number;
-    name?: string;
     reviewId?: string;
-    startDate?: string;
-    endDate?: string;
   },
   config?: SWRConfiguration,
 ) {
   const query = {
     limit: params?.limit?.toString(),
-    name: params?.name,
     reviewId: params?.reviewId,
-    startDate: params?.startDate,
-    endDate: params?.endDate,
   };
   const key = `/api/traces?${JSON.stringify(params ?? {})}`;
   return useSWR(

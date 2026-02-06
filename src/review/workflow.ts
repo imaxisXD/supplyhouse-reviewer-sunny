@@ -577,6 +577,9 @@ export async function executeReview(job: ReviewJob, sessionLogger?: Logger): Pro
     await redis.set(`review:result:${reviewId}`, JSON.stringify(result));
     await updateStatus(reviewId, "complete", 100, findings);
 
+    // Fire-and-forget: re-fetch OpenRouter costs after a short delay
+    void verifyCostsInBackground(reviewId, traces);
+
     await publish(`review:events:${reviewId}`, {
       type: "REVIEW_COMPLETE",
       summary: {

@@ -62,8 +62,26 @@ function initRepoDocsDb(database: Database): void {
       content,
       repo_id,
       doc_id,
-      chunk_index
+      chunk_index,
+      content='repo_doc_chunks',
+      content_rowid='rowid'
     );
+
+    -- Triggers to keep FTS in sync with repo_doc_chunks automatically
+    CREATE TRIGGER IF NOT EXISTS repo_doc_chunks_ai AFTER INSERT ON repo_doc_chunks BEGIN
+      INSERT INTO repo_doc_chunks_fts(rowid, content, repo_id, doc_id, chunk_index)
+      VALUES (new.rowid, new.content, new.repo_id, new.doc_id, new.chunk_index);
+    END;
+    CREATE TRIGGER IF NOT EXISTS repo_doc_chunks_ad AFTER DELETE ON repo_doc_chunks BEGIN
+      INSERT INTO repo_doc_chunks_fts(repo_doc_chunks_fts, rowid, content, repo_id, doc_id, chunk_index)
+      VALUES ('delete', old.rowid, old.content, old.repo_id, old.doc_id, old.chunk_index);
+    END;
+    CREATE TRIGGER IF NOT EXISTS repo_doc_chunks_au AFTER UPDATE ON repo_doc_chunks BEGIN
+      INSERT INTO repo_doc_chunks_fts(repo_doc_chunks_fts, rowid, content, repo_id, doc_id, chunk_index)
+      VALUES ('delete', old.rowid, old.content, old.repo_id, old.doc_id, old.chunk_index);
+      INSERT INTO repo_doc_chunks_fts(rowid, content, repo_id, doc_id, chunk_index)
+      VALUES (new.rowid, new.content, new.repo_id, new.doc_id, new.chunk_index);
+    END;
   `);
 }
 
@@ -161,8 +179,8 @@ export function updateRepoDoc(docId: string, input: { title: string; body: strin
 
 export function deleteRepoDoc(docId: string): boolean {
   const database = getDb();
+  // Chunks + FTS cleaned up via trigger (external-content FTS5)
   database.query("DELETE FROM repo_doc_chunks WHERE doc_id = ?").run(docId);
-  database.query("DELETE FROM repo_doc_chunks_fts WHERE doc_id = ?").run(docId);
   const result = database.query("DELETE FROM repo_docs WHERE id = ?").run(docId);
   return result.changes > 0;
 }
@@ -238,8 +256,9 @@ function splitMarkdownIntoChunks(content: string, minSize = 800, maxSize = 1200)
 export function reindexDocChunks(docId: string, repoId: string, body: string): void {
   const database = getDb();
   const now = new Date().toISOString();
+
+  // Delete old chunks — FTS rows are cleaned up automatically via trigger
   database.query("DELETE FROM repo_doc_chunks WHERE doc_id = ?").run(docId);
-  database.query("DELETE FROM repo_doc_chunks_fts WHERE doc_id = ?").run(docId);
 
   const chunks = splitMarkdownIntoChunks(body);
   if (chunks.length === 0) return;
@@ -248,15 +267,11 @@ export function reindexDocChunks(docId: string, repoId: string, body: string): v
     `INSERT INTO repo_doc_chunks (id, doc_id, repo_id, chunk_index, content, created_at)
      VALUES (?, ?, ?, ?, ?, ?)`,
   );
-  const insertFts = database.query(
-    `INSERT INTO repo_doc_chunks_fts (content, repo_id, doc_id, chunk_index)
-     VALUES (?, ?, ?, ?)`,
-  );
 
+  // Only insert into repo_doc_chunks — trigger auto-populates FTS
   chunks.forEach((chunk, index) => {
     const chunkId = randomUUID();
     insertChunk.run(chunkId, docId, repoId, index, chunk, now);
-    insertFts.run(chunk, repoId, docId, index);
   });
 }
 

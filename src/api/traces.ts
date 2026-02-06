@@ -1,7 +1,15 @@
-import { Elysia } from "elysia";
+import { Elysia, t } from "elysia";
 import { mastra } from "../mastra/index.ts";
 import { redis } from "../db/redis.ts";
 import { createLogger } from "../config/logger.ts";
+import {
+  TraceStatsResponseSchema,
+  ReviewTraceGroupResponseSchema,
+  TraceListResponseSchema,
+  TraceDetailResponseSchema,
+  SpansResponseSchema,
+  ErrorResponse,
+} from "./schemas.ts";
 
 const log = createLogger("api:traces");
 
@@ -119,7 +127,7 @@ export const traceRoutes = new Elysia({ prefix: "/api/traces" })
       log.error({ error: error instanceof Error ? error.message : String(error) }, "Failed to get trace stats");
       return { totalTraces: 0, totalSpans: 0, avgDurationMs: 0, spanTypeCount: {} };
     }
-  })
+  }, { response: TraceStatsResponseSchema })
 
   /**
    * GET /api/traces/by-review
@@ -309,14 +317,14 @@ export const traceRoutes = new Elysia({ prefix: "/api/traces" })
       log.error({ error: error instanceof Error ? error.message : String(error) }, "Failed to group traces by review");
       return { reviews: [] };
     }
-  })
+  }, { response: ReviewTraceGroupResponseSchema })
 
   /**
    * GET /api/traces?limit=50&reviewId=xxx
    */
   .get("/", async ({ query }) => {
-    const limit = Math.min(parseInt((query as Record<string, string>).limit ?? "50", 10), 100);
-    const reviewId = (query as Record<string, string>).reviewId;
+    const limit = Math.min(parseInt(query.limit ?? "50", 10), 100);
+    const reviewId = query.reviewId;
 
     try {
       const observability = await getObservabilityStore();
@@ -342,6 +350,12 @@ export const traceRoutes = new Elysia({ prefix: "/api/traces" })
       log.error({ error: error instanceof Error ? error.message : String(error) }, "Failed to list traces");
       return { traces: [], total: 0 };
     }
+  }, {
+    query: t.Object({
+      limit: t.Optional(t.String()),
+      reviewId: t.Optional(t.String()),
+    }),
+    response: TraceListResponseSchema,
   })
 
   /**
@@ -372,6 +386,12 @@ export const traceRoutes = new Elysia({ prefix: "/api/traces" })
       log.error({ error: error instanceof Error ? error.message : String(error), traceId }, "Failed to get trace");
       return { error: "Failed to fetch trace" };
     }
+  }, {
+    response: {
+      200: TraceDetailResponseSchema,
+      404: ErrorResponse,
+      500: ErrorResponse,
+    },
   })
 
   /**
@@ -400,4 +420,4 @@ export const traceRoutes = new Elysia({ prefix: "/api/traces" })
       log.error({ error: error instanceof Error ? error.message : String(error), traceId }, "Failed to get spans");
       return { spans: [] };
     }
-  });
+  }, { response: SpansResponseSchema });
