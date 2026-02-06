@@ -72,6 +72,9 @@ export const FindingSchema = t.Object({
       })
     )
   ),
+  lineText: t.Optional(t.String()),
+  lineId: t.Optional(t.String()),
+  unlocatable: t.Optional(t.Boolean()),
   disproven: t.Optional(t.Boolean()),
   disprovenReason: t.Optional(t.String()),
   verificationNotes: t.Optional(t.String()),
@@ -164,6 +167,7 @@ export const ReviewResultSchema = t.Object({
         })
       ),
       recommendation: t.Optional(t.String()),
+      confidenceScore: t.Optional(t.Number()),
     })
   ),
   traces: t.Optional(t.Array(AgentTraceSchema)),
