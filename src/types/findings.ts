@@ -2,6 +2,14 @@ export type Severity = "critical" | "high" | "medium" | "low" | "info";
 
 export type Category = "security" | "bug" | "duplication" | "api-change" | "refactor";
 
+/** Investigation trail showing how an agent verified a finding */
+export interface InvestigationTrail {
+  toolsUsed: string[];
+  filesChecked: string[];
+  patternsSearched: string[];
+  conclusion: string;
+}
+
 export interface Finding {
   file: string;
   line: number;
@@ -25,19 +33,17 @@ export interface Finding {
     line: number;
     usage: string;
   }[];
-  // Investigation trail from tool-using agents
-  investigation?: {
-    toolsUsed: string[];
-    filesChecked: string[];
-    patternsSearched: string[];
-    conclusion: string;
-  };
   // Verification status - set by verification agent
   disproven?: boolean;
   disprovenReason?: string;
   verificationNotes?: string;
+  /** Investigation trail documenting how the agent verified this finding */
+  investigation?: InvestigationTrail;
+  /** Finding couldn't be mapped to a specific line - shown in summary only */
+  unlocatable?: boolean;
 }
 
+/** Summary of tool calls made during an agent execution */
 export interface ToolUsageSummary {
   totalCalls: number;
   byTool: Record<string, number>;
@@ -54,12 +60,12 @@ export interface AgentTrace {
   findingsCount: number;
   status: "success" | "failed" | "skipped";
   error?: string;
-  /** OpenRouter generation ID for cost verification */
-  generationId?: string;
-  /** Tool usage statistics from agent execution */
-  toolUsage?: ToolUsageSummary;
   /** Reference to Mastra's native trace for detailed span analysis */
   mastraTraceId?: string;
+  /** OpenRouter generation ID for re-fetching cost data */
+  generationId?: string;
+  /** Tool usage summary — tracks whether the agent actually used its tools */
+  toolUsage?: ToolUsageSummary;
 }
 
 export interface ReviewResult {

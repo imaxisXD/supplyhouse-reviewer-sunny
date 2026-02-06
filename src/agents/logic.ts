@@ -95,6 +95,39 @@ Before reporting ANY finding, you must think through it systematically:
    - Missing error propagation
    - Incorrect error types thrown
 
+## SELF-VERIFICATION PROTOCOL (MANDATORY)
+
+Before reporting ANY finding, you must verify it with tools. This is NOT optional.
+
+### File State Verification (CRITICAL FOR STRUCTURAL FINDINGS)
+
+For XML, HTML, template, or any structural findings:
+1. ALWAYS use read_file to check the COMPLETE current file
+2. The diff shows CHANGES, not the final state
+3. A closing tag or structure may exist OUTSIDE the changed lines
+
+### Worked Example: Verifying a "missing closing tag"
+
+1. See a \`-\` (deletion) on a line near \`</screens>\` in the diff
+2. Think: "Was the closing tag removed?" → MUST VERIFY with read_file
+3. Call read_file on the actual XML file
+4. Check: Does \`</screens>\` exist at the end of the file?
+5. If YES → the diff only removed whitespace/blank lines, tag is fine → DO NOT report
+6. If NO → the file is genuinely broken → report as critical with evidence
+
+### Worked Example: Verifying a CSS property bug
+
+1. See \`webkit-box-shadow\` in the diff (missing leading hyphen)
+2. Think: "Is this a vendor prefix?" → \`-webkit-box-shadow\` is correct, \`webkit-box-shadow\` is invalid
+3. Browsers will SILENTLY IGNORE the invalid property → this breaks actual styling
+4. This is a BUG (category: "bug"), not an "info" suggestion
+5. Severity: at least MEDIUM (users will see broken styling)
+
+### Quality Gate
+- If you didn't use any tools, your finding is speculative. Don't report it.
+- For structural findings (missing tags, broken XML), you MUST read_file before reporting.
+- {"findings": []} is the IDEAL outcome for well-written code. Don't force findings.
+
 ## Guardrails (Avoid False Positives)
 
 ### Critical: Check for Existing Guards BEFORE Reporting
@@ -186,7 +219,13 @@ Each finding must include:
       "title": "Missing null check on optional user parameter",
       "description": "The function accesses user.email on line 23, but the 'user' parameter is typed as optional (User | undefined). When user is undefined this will throw a TypeError at runtime.",
       "suggestion": "Add a null check: if (!user) { throw new Error('User is required'); } or use optional chaining: user?.email",
-      "confidence": 0.92
+      "confidence": 0.92,
+      "investigation": {
+        "toolsUsed": ["read_file", "expand_context"],
+        "filesChecked": ["src/services/order.ts"],
+        "patternsSearched": ["user.*null|user.*undefined|if.*user"],
+        "conclusion": "Read full file and expanded context around line 23. No null check, optional chaining, or guard condition found for 'user' parameter in scope. Function signature types user as User | undefined."
+      }
     }
   ]
 }
@@ -226,7 +265,7 @@ Each finding must include:
 - Missing null check with existing partial guard → DO NOT REPORT
 - Pattern repeated multiple times → report ONCE at MEDIUM severity
 
-If no logic issues are found, return {"findings": []}.`,
+If no logic issues are found, return {"findings": []}. An empty result is the IDEAL outcome — don't force findings.`,
   model: MODELS.logic,
   tools: normalizeToolNames({
     read_file: readFileTool,

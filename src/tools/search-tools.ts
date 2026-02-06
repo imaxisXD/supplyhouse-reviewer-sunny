@@ -79,7 +79,11 @@ export const grepCodebaseTool = createTool({
   id: "grep_codebase",
   description:
     "Fast text/regex search across the codebase using ripgrep. " +
-    "Returns matching file paths, line numbers, content, and the matched portion.",
+    "Use this to VERIFY claims before reporting findings. " +
+    "Search for: security patterns (csrf, xsrf, rate_limit), library configs (axios.create, interceptors), " +
+    "middleware registration, validation functions. " +
+    "Returns matching file paths, line numbers, content, and the matched portion. " +
+    "TIP: Search for the HTTP client library name to find its source or configuration.",
   inputSchema: z.object({
     pattern: z.string().describe("Regex pattern to search for"),
     repoPath: z

@@ -78,7 +78,7 @@ export function Sidebar() {
       </nav>
 
       <div className="px-4 py-4 border-t border-ink-900 text-[10px] uppercase tracking-[0.3em] text-ink-600">
-        v2.0.0
+        v2.0.1
       </div>
       </div>
 

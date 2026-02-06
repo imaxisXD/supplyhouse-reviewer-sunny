@@ -8,13 +8,6 @@ import {
   listRepoDocs,
   updateRepoDoc,
 } from "../db/repo-docs.ts";
-import {
-  RepoDocsListResponseSchema,
-  RepoDocSummarySchema,
-  RepoDocSchema,
-  DeleteOkResponseSchema,
-  ErrorResponse,
-} from "./schemas.ts";
 
 const log = createLogger("api:repo-docs");
 
@@ -30,11 +23,6 @@ export const repoDocsRoutes = new Elysia({ prefix: "/api/docs" })
       set.status = 500;
       return { error: "Failed to list repo docs" };
     }
-  }, {
-    response: {
-      200: RepoDocsListResponseSchema,
-      500: ErrorResponse,
-    },
   })
   .get("/repos/:repoId/summary", ({ params, set }) => {
     const repoId = decodeURIComponent(params.repoId);
@@ -47,11 +35,6 @@ export const repoDocsRoutes = new Elysia({ prefix: "/api/docs" })
       set.status = 500;
       return { error: "Failed to build repo docs summary" };
     }
-  }, {
-    response: {
-      200: RepoDocSummarySchema,
-      500: ErrorResponse,
-    },
   })
   .get("/:docId", ({ params, set }) => {
     try {
@@ -67,12 +50,6 @@ export const repoDocsRoutes = new Elysia({ prefix: "/api/docs" })
       set.status = 500;
       return { error: "Failed to fetch repo doc" };
     }
-  }, {
-    response: {
-      200: RepoDocSchema,
-      404: ErrorResponse,
-      500: ErrorResponse,
-    },
   })
   .post(
     "/",
@@ -98,10 +75,6 @@ export const repoDocsRoutes = new Elysia({ prefix: "/api/docs" })
         title: t.String({ minLength: 1, maxLength: 200 }),
         body: t.String({ minLength: 1, maxLength: 200_000 }),
       }),
-      response: {
-        201: RepoDocSchema,
-        500: ErrorResponse,
-      },
     },
   )
   .put(
@@ -129,11 +102,6 @@ export const repoDocsRoutes = new Elysia({ prefix: "/api/docs" })
         title: t.String({ minLength: 1, maxLength: 200 }),
         body: t.String({ minLength: 1, maxLength: 200_000 }),
       }),
-      response: {
-        200: RepoDocSchema,
-        404: ErrorResponse,
-        500: ErrorResponse,
-      },
     },
   )
   .delete("/:docId", ({ params, set }) => {
@@ -150,10 +118,4 @@ export const repoDocsRoutes = new Elysia({ prefix: "/api/docs" })
       set.status = 500;
       return { error: "Failed to delete repo doc" };
     }
-  }, {
-    response: {
-      200: DeleteOkResponseSchema,
-      404: ErrorResponse,
-      500: ErrorResponse,
-    },
   });

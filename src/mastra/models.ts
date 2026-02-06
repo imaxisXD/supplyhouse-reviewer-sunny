@@ -16,7 +16,7 @@ export const MODELS = {
   // Completeness agent - finds MISSING controls (uses same model as logic for reasoning)
   discovery: "openrouter/moonshotai/kimi-k2.5",
   // Verification agent - disproves findings (fast model for cost efficiency)
-  verification: "openrouter/google/gemini-3-flash-preview",
+  verification: "openrouter/moonshotai/kimi-k2.5",
 } as const;
 
 export type ModelRole = keyof typeof MODELS;

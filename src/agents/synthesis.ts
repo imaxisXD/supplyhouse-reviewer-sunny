@@ -78,7 +78,7 @@ Generate a **concise summary comment** for the PR. Keep it short and scannable â
 
 \uD83D\uDCCA Analyzed **N** files \u00B7 Found **N** issues \u00B7 \u23F1 Xs
 
-\uD83D\uDD34 **N Critical** \u00B7 \uD83D\uDFE0 **N High** \u00B7 \uD83D\uDFE1 **N Medium** \u00B7 \uD83D\uDD35 **N Low**
+\uD83D\uDD34 **N Critical** \u00B7 \uD83D\uDFE0 **N High** \u00B7 \uD83D\uDFE1 **N Medium** \u00B7 \uD83D\uDD35 **N Low** \u00B7 \u2139\uFE0F **N Info**
 
 [Only include severity sections that have findings:]
 
@@ -90,9 +90,13 @@ Generate a **concise summary comment** for the PR. Keep it short and scannable â
 
 ### \uD83D\uDFE1 Medium
 - Issue title (\`file:line\`)
-[Show at most 5 medium findings. If more, add "...and N more"]
+[Show ALL medium findings. Never truncate or collapse with "...and N more".]
 
-\uD83D\uDD35 **N low-priority issues** (brief comma-separated list of categories, e.g. "magic numbers, unused vars, code duplication")
+### \uD83D\uDD35 Low
+- **Issue title** (\`file:line\`) â€” 1-line description. *Suggestion: brief actionable fix.*
+
+### \u2139\uFE0F Info
+- **Issue title** (\`file:line\`) â€” 1-line description. *Suggestion: brief actionable fix.*
 
 [If no issues: "\u2705 No issues found. Code looks clean."]
 
@@ -168,7 +172,7 @@ Return a JSON object with the following structure:
 - If there are more than 20 findings, prioritise and only include the top 20 most important ones, noting the rest in the summary.
 - The summary should be concise and scannable. Keep it under 25 lines. Do NOT add "Key Changes", "Important Files Changed" tables, or verbose assessment paragraphs.
 - Use emojis consistently for severity grouping. Only show severity sections that have findings.
-- For medium findings, show at most 5 items then "...and N more". For low findings, show just a count with brief category list.`,
+- Show ALL findings for every severity level. Never truncate or collapse findings with "...and N more". Every finding must be listed individually. For low and info findings, include bold title, file:line, a 1-line description, and an italicized suggestion.`,
   model: MODELS.synthesis,
   tools: {},
 });

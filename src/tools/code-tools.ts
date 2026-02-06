@@ -14,7 +14,9 @@ export const readFileTool = createTool({
   id: "read_file",
   description:
     "Read the full content of a file and return it as a string. " +
-    "Useful for getting complete context around code changes.",
+    "CRITICAL: Use this to verify the actual state of files before reporting structural issues. " +
+    "The diff only shows changes, not the complete file — always read_file to confirm " +
+    "that a closing tag, element, or structure truly is missing before reporting.",
   inputSchema: z.object({
     filePath: z.string().describe("Absolute path to the file to read"),
   }),

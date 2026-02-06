@@ -14,8 +14,10 @@ import { wsRoutes } from "./api/ws.ts";
 import { graphRoutes } from "./api/graph.ts";
 import { journeyRoutes } from "./api/journey.ts";
 import { traceRoutes } from "./api/traces.ts";
+import { repoDocsRoutes } from "./api/repo-docs.ts";
 import { startReviewWorker } from "./queue/review-worker.ts";
 import { startIndexWorker } from "./queue/index-worker.ts";
+import { ensureRepoDocsDb } from "./db/repo-docs.ts";
 
 const log = createLogger("server");
 const port = parseInt(process.env.PORT ?? "3000", 10);
@@ -24,6 +26,8 @@ const tlsKey = process.env.TLS_KEY;
 const corsOrigin = env.CORS_ORIGIN
   ? env.CORS_ORIGIN.split(",").map((o) => o.trim()).filter(Boolean)
   : ["http://localhost:3000", "http://localhost:5173"];
+
+ensureRepoDocsDb();
 
 const app = new Elysia()
   .use(
@@ -92,6 +96,7 @@ const app = new Elysia()
   .use(wsRoutes)
   .use(graphRoutes)
   .use(traceRoutes)
+  .use(repoDocsRoutes)
   .listen({
     port,
     ...(tlsCert && tlsKey

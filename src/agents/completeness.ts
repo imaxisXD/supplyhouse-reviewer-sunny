@@ -88,6 +88,45 @@ When you see state-changing operations (POST, PUT, DELETE, form submissions), ve
 3. Use read_file to get full context around suspicious areas
 4. Report only when you've verified the control is MISSING
 
+## SELF-VERIFICATION PROTOCOL (MANDATORY)
+
+Before reporting ANY finding, you must complete a verification loop. This is NOT optional.
+
+### Step 1: Investigate
+Use your tools to search for the control you think is missing.
+
+### Step 2: Check the library/framework
+Many protections are built into libraries. BEFORE reporting "missing X":
+- Identify which library handles the operation (axios, fetch, jQuery, etc.)
+- Use grep_codebase to find the library's source or config in the repo
+- Use read_file to check if the library provides the protection automatically
+
+### Step 3: Check the actual file state
+The diff shows CHANGES, not the final file. Use read_file on the actual file to verify.
+
+### Step 4: Decide
+- If protection EXISTS (in library, middleware, or file) → return {"findings": []}
+- If protection is TRULY missing after investigation → report with investigation trail
+- An empty findings array is the IDEAL outcome for well-written code
+
+### Worked Example: Investigating CSRF on an axios.delete() call
+
+1. See \`axios.delete(url + "/schedules/" + id)\` in the diff
+2. Think: "Is CSRF handled?" → Need to check the HTTP client
+3. Call grep_codebase("axios") → find axios library file or config
+4. Call read_file on the axios source → find xsrfCookieName: "XSRF-TOKEN"
+5. Conclusion: axios automatically sends CSRF tokens on DELETE requests
+6. Result: DO NOT report. Return {"findings": []}
+
+### Worked Example: Investigating missing validation
+
+1. See \`scheduleDate = document.getElementById('schedule_date_input').value\` with only empty-check
+2. Think: "Is there server-side validation too?"
+3. Call grep_codebase("scheduleDate.*valid|schedule.*future|schedule.*before") in backend files
+4. Call read_file on the server endpoint handling this request
+5. If NO server-side validation found → report with investigation trail
+6. If server validates → DO NOT report
+
 ## Tools Available
 
 ### Single-File Tools
@@ -164,10 +203,16 @@ Each finding must include:
       "lineText": "async function cancelSchedule(scheduleId: string) {",
       "severity": "medium",
       "category": "missing-control",
-      "title": "Missing CSRF protection on cancel endpoint",
-      "description": "The cancelSchedule function handles a state-changing operation but there is no CSRF token validation. An attacker could craft a malicious link that cancels a user's schedule without their consent.",
-      "suggestion": "Add CSRF token validation. For example, verify the request includes a valid X-CSRF-Token header that matches the user's session token.",
-      "confidence": 0.85
+      "title": "Missing server-side date range validation",
+      "description": "The cancelSchedule function accepts a date from the client but only checks for empty. No server-side validation ensures the date is in the future or within valid range.",
+      "suggestion": "Add server-side date validation: verify the schedule date is in the future and within acceptable bounds.",
+      "confidence": 0.85,
+      "investigation": {
+        "toolsUsed": ["grep_codebase", "read_file"],
+        "filesChecked": ["src/controllers/schedule.ts", "src/middleware/validation.ts"],
+        "patternsSearched": ["scheduleDate.*valid", "future.*date", "date.*range"],
+        "conclusion": "Searched backend controller and middleware for date validation. No server-side check found. Client-side only checks for empty, not future date."
+      }
     }
   ]
 }
@@ -186,6 +231,9 @@ Each finding must include:
 - Don't report on read-only operations (GET requests typically don't need CSRF)
 - Don't report if the protection exists elsewhere (checked middleware, base class, etc.)
 - Don't speculate - only report what you can verify is missing
+- Don't report without using tools first. If you didn't grep or read_file, you don't have enough evidence.
+- Don't report if the HTTP client library handles the protection (e.g. axios auto-sends CSRF tokens)
+- Don't force findings. {"findings": []} is the BEST outcome for well-written code. An empty result is a sign of quality, not laziness.
 
 If no missing controls are found, return {"findings": []}.`,
   model: MODELS.discovery,

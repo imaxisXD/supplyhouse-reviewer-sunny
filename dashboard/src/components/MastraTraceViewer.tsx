@@ -67,7 +67,6 @@ export default function MastraTraceViewer() {
   const spanTree = buildSpanTree(spans);
   const flatSpans = flattenTree(spanTree);
 
-  // Calculate timeline bounds
   const timelineStart = spans.length > 0
     ? Math.min(...spans.map((s) => new Date(s.startTime).getTime()))
     : 0;
@@ -93,9 +92,9 @@ export default function MastraTraceViewer() {
           </div>
           <div className="bg-white border border-ink-900 p-4">
             <div className="text-2xl font-semibold text-ink-900">
-              {stats.totalSpans}
+              {reviewGroups.length}
             </div>
-            <div className="text-sm text-ink-600">Total Spans</div>
+            <div className="text-sm text-ink-600">Reviews</div>
           </div>
           <div className="bg-white border border-ink-900 p-4">
             <div className="text-2xl font-semibold text-ink-900">
@@ -112,11 +111,11 @@ export default function MastraTraceViewer() {
                     (SPAN_TYPE_COLORS[getSpanType(type)] ?? SPAN_TYPE_COLORS.default).bg
                   } text-white`}
                 >
-                  {type}: {count}
+                  {shortAgentName(type)}: {count}
                 </span>
               ))}
             </div>
-            <div className="text-sm text-ink-600 mt-1">Span Types</div>
+            <div className="text-sm text-ink-600 mt-1">Agent Types</div>
           </div>
         </div>
       )}
@@ -131,7 +130,7 @@ export default function MastraTraceViewer() {
           )}
           {!loadingTraces && reviewGroups.length === 0 && (
             <p className="text-sm text-ink-600">
-              No traces found. Run an agent to generate traces.
+              No traces found. Run a review to generate traces.
             </p>
           )}
           <div className="space-y-1 max-h-[500px] overflow-y-auto">
@@ -213,7 +212,7 @@ export default function MastraTraceViewer() {
 
           {!selectedTraceId && (
             <div className="flex items-center justify-center h-64 text-ink-600 text-sm">
-              Select a trace from the left panel to view its spans.
+              Expand a review and select an agent to view its spans.
             </div>
           )}
 
@@ -279,7 +278,6 @@ export default function MastraTraceViewer() {
                           {formatDuration(span.startTime, span.endTime)}
                         </span>
                       </div>
-                      {/* Timeline bar */}
                       <div className="w-full h-3 bg-warm-200 overflow-hidden relative">
                         <div
                           className={`absolute h-full ${(SPAN_TYPE_COLORS[spanType] ?? SPAN_TYPE_COLORS.default).bg}`}
